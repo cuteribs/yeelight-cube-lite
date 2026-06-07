@@ -40,3 +40,6 @@ generate_fontmap.py
 www/unused-cards/
 www/yeelight-cube-lettermap-card.js
 www/yeelight-cube-angle-gradient-card.js
+
+# Internal-only development cards (not shipped in the public repo)
+www/yeelight-cube-calibration-card.js

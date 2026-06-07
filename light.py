@@ -14,7 +14,7 @@ from homeassistant.components.light import LightEntity, ColorMode # type: ignore
 from homeassistant.helpers.entity import Entity # type: ignore
 from homeassistant.components.sensor import SensorEntity # type: ignore
 from homeassistant.helpers.restore_state import RestoreEntity # type: ignore
-from homeassistant.core import HomeAssistant, SupportsResponse # type: ignore
+from homeassistant.core import HomeAssistant, SupportsResponse, callback # type: ignore
 from homeassistant.helpers.entity_platform import AddEntitiesCallback # type: ignore
 from homeassistant.config_entries import ConfigEntry # type: ignore
 from homeassistant.helpers.event import async_track_state_change_event # type: ignore
@@ -393,11 +393,16 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         # Uses floor() + max(1) to preserve color ratios and prevent channel loss
         if self._preview_darken > 0:
             darken_factor = 1 - (self._preview_darken / 100)
-            # Use floor() to avoid rounding up, then ensure non-zero channels stay alive
-            # This prevents color shifts (e.g., purple -> red) when green channel would round to 0
-            r = max(1, math.floor(r * darken_factor)) if r > 0 else 0
-            g = max(1, math.floor(g * darken_factor)) if g > 0 else 0
-            b = max(1, math.floor(b * darken_factor)) if b > 0 else 0
+            # Use floor() to avoid rounding up, then ensure non-zero channels stay alive.
+            # Each channel has its own minimum lit value (calibrated): a channel that
+            # is intended to be on never drops below its floor, so dim colours keep
+            # their hue instead of crushing channels that the LED can't render low.
+            floor_r = max(1, int(getattr(self, '_calib_floor_r', 1)))
+            floor_g = max(1, int(getattr(self, '_calib_floor_g', 1)))
+            floor_b = max(1, int(getattr(self, '_calib_floor_b', 1)))
+            r = max(floor_r, math.floor(r * darken_factor)) if r > 0 else 0
+            g = max(floor_g, math.floor(g * darken_factor)) if g > 0 else 0
+            b = max(floor_b, math.floor(b * darken_factor)) if b > 0 else 0
             
             # Log darken effect for debugging (reduced to debug level to avoid spam)
             _LOGGER.debug(f"[FINAL BRIGHTNESS] RGB{original_rgb} -> darken {self._preview_darken}% -> RGB({r}, {g}, {b})")
@@ -461,7 +466,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         GAMMA_G           (default 0.75)
             Green channel gamma.  Same logic as red.
 
-        GAMMA_B           (default 0.65)
+        GAMMA_B           (default 0.62)
             Blue channel gamma.  Lowest value because blue LEDs need the
             most help.  If blues are still too dark, try 0.50-0.55.
             If blues are over-boosted, try 0.70-0.80.
@@ -524,7 +529,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         b_corr = gamma_correct(b, GAMMA_B)
 
         # HYBRID LUMINANCE + CHANNEL-BALANCE scaling
-        # Pure per-channel gamma (R=0.85, G=0.75, B=0.65) destroys hue:
+        # Pure per-channel gamma (R=0.85, G=0.75, B=0.62) destroys hue:
         #   pink (10,3,6) -> (16,9,22) = massive shift pink->purple!
         #   white (10,10,10) -> (16,19,22) = blue tint
         #
@@ -658,201 +663,83 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
     """Home Assistant LightEntity for the Yeelight Cube Lite."""
     
     # UNIFIED BRIGHTNESS CONTROL CONFIGURATION
-    # This system combines TWO brightness mechanisms for extended range:
+    # ----------------------------------------
+    # The single user brightness slider (1-100%) drives BOTH mechanisms together
+    # across the WHOLE range -- there is no mode switch / breaking point:
     #
-    # 1. RGB DARKENING (high brightness range):
-    #    - Reduces RGB values mathematically (e.g., RGB(255,0,0) -> RGB(128,0,0) at 50% darken)
-    #    - Used when hardware brightness is at maximum
-    #    - Preserves color accuracy at higher brightness levels
+    #   perceived = hardware_keep(p) * rgb_keep(p)        where p = user% / 100
     #
-    # 2. HARDWARE BRIGHTNESS (low brightness range):
-    #    - Reduces physical LED brightness via Yeelight lamp's built-in dimming
-    #    - Used when RGB darkening reaches its maximum safe limit
-    #    - Allows going MUCH dimmer for night/ambient lighting
+    #   hardware_keep(p) = hw_floor + (1 - hw_floor) * p ** hw_curve   (LED dimming)
+    #   rgb_keep(p)      = (1 - darken_floor) + darken_floor * p ** darken_curve
+    #                      (per-pixel math; reported as darken% = 100*(1-rgb_keep))
     #
-    # HOW IT WORKS:
-    # - User sees ONE brightness slider (0-100%)
-    # - High brightness (e.g., 50-100%): hardware=100%, darkness varies (0-94%)
-    # - Low brightness (e.g., 0-50%): hardware varies (10-100%), darkness=94% (max)
-    # - Transition point is configurable below
+    # Both curves rise smoothly from their floor (at p=0) to 1.0 (at p=100%), so:
+    #   - p=0   : hardware=hw_floor%, darken=darken_floor%  -> very dim night level
+    #   - p=100 : hardware=100%,      darken=0%             -> full color output
+    # The product of two monotonic curves is itself smooth and monotonic, which
+    # removes the irregularity that the old hard transition point produced.
     #
-    
-    # TRANSITION POINT: When to switch between hardware and darkness control
-    # At what user brightness % does the system switch modes?
-    # - Above this: hardware=100%, darkness decreases (brighter via less darkening)
-    # - Below this: hardware decreases, darkness=MAX_DARKEN_PERCENT (dimmer via hardware)
-    BRIGHTNESS_TRANSITION_POINT = 25  # User brightness % (1-100) where mode switches
-    
-    # HARDWARE BRIGHTNESS LIMITS (low brightness range)
-    # When user brightness is BELOW transition point:
-    # - Darkness is fixed at MAX_DARKEN_PERCENT
-    # - Hardware brightness scales from MIN to MAX based on user brightness
-    MIN_HARDWARE_BRIGHTNESS = 1 # 25  # Minimum hardware brightness % (1-100) - very dim!
-    MAX_HARDWARE_BRIGHTNESS = 100  # Hardware brightness % at transition point (usually 100)
-    
-    # DARKNESS LIMITS (high brightness range)
-    # When user brightness is ABOVE transition point:
-    # - Hardware brightness is fixed at 100%
-    # - Darkness scales from MAX to MIN based on user brightness
-    MAX_DARKEN_PERCENT = 97  # Maximum darkness % at transition point (safe limit: 91-97%)
-    MIN_DARKEN_PERCENT = 0   # Minimum darkness % at 100% brightness (0 = no darkening)
-    LOW_MIN_DARKEN_PERCENT = 95  # Darken % at the very bottom of the low range (0% brightness)
-                                  # Lower = more pixel headroom & color precision at very dim levels
-                                  # Darken ramps from LOW_MIN_DARKEN (bottom) to MAX_DARKEN (transition)
-    
-    # DARKNESS CURVE CONTROL POINTS (high brightness range only)
-    # Fine-tune the darkness curve for brightness values ABOVE transition point
-    # These define how darkness decreases as brightness increases from transition to 100%
-    #
-    # Control points are automatically scaled based on BRIGHTNESS_TRANSITION_POINT:
-    # - CP1: 20% into high range (e.g., 60% if transition=50, 44% if transition=30)
-    # - CP2: 50% into high range (e.g., 75% if transition=50, 65% if transition=30)
-    # - CP3: 80% into high range (e.g., 90% if transition=50, 86% if transition=30)
-    #
-    # Example with BRIGHTNESS_TRANSITION_POINT=50:
-    # - At 50% brightness: MAX_DARKEN_PERCENT (e.g., 94%)
-    # - At 60% brightness: DARKEN_AT_60_PERCENT (e.g., 75%)
-    # - At 75% brightness: DARKEN_AT_75_PERCENT (e.g., 45%)
-    # - At 90% brightness: DARKEN_AT_90_PERCENT (e.g., 20%)
-    # - At 100% brightness: MIN_DARKEN_PERCENT (e.g., 0%)
-    #
-    # Adjust these to control how quickly brightness increases in the high range:
-    DARKNESS_AT_20_PCT_HIGH = 85   # Darkness % at 20% into high range
-    DARKNESS_AT_50_PCT_HIGH = 70   # Darkness % at 50% into high range
-    DARKNESS_AT_80_PCT_HIGH = 40   # Darkness % at 80% into high range
-    
-    # EXAMPLE CONFIGURATIONS:
-    #
-    # CONFIGURATION 1: Maximum dim range (current settings)
-    # - Transition at 50%
-    # - Low range (0-50%): hardware 10-100%, darkness fixed at 94%
-    # - High range (50-100%): hardware 100%, darkness 94-0%
-    # - Result: VERY dim minimum, smooth brightness curve
-    #
-    # CONFIGURATION 2: More linear response
-    # - BRIGHTNESS_TRANSITION_POINT = 30
-    # - MIN_HARDWARE_BRIGHTNESS = 20
-    # - MAX_DARKEN_PERCENT = 85
-    # - Result: Less extreme dimming, more predictable brightness changes
-    #
-    # CONFIGURATION 3: Prioritize color accuracy
-    # - BRIGHTNESS_TRANSITION_POINT = 20
-    # - MIN_HARDWARE_BRIGHTNESS = 30
-    # - MAX_DARKEN_PERCENT = 80
-    # - Result: Uses hardware dimming less, better color at low brightness
-    #
+    # Tuning knobs (all runtime-tunable via set_color_calibration / wizard):
+    #   HW_FLOOR_PERCENT  - hardware brightness % at slider 0 (sets dimmest LED drive)
+    #   DARKEN_FLOOR_PERCENT - darken % at slider 0 (sets dimmest per-pixel math)
+    #   HW_CURVE_EXPONENT - <1 makes hardware rise fast then flatten near 100%
+    #                       (keeps the bright end smooth as hardware barely moves)
+    #   DARKEN_CURVE_EXPONENT - >1 makes darken do most of its work in the upper
+    #                       range (so colors stay rich until you dim well down)
+    HW_FLOOR_PERCENT = 1        # Hardware brightness % at 0% user brightness (1-100)
+    DARKEN_FLOOR_PERCENT = 97   # Darken % at 0% user brightness (0-100, safe <=97)
+    HW_CURVE_EXPONENT = 0.5     # Shaping exponent for the hardware curve (0.1-3.0)
+    DARKEN_CURVE_EXPONENT = 2.0 # Shaping exponent for the darken curve (0.1-4.0)
     
     def _calculate_brightness_values(self, user_brightness: int) -> Tuple[int, int]:
         """
         Calculate hardware brightness and darkness percentage from user brightness.
-        
-        This implements a unified brightness system with two ranges:
-        
-        LOW RANGE (0 to BRIGHTNESS_TRANSITION_POINT):
-        - Hardware brightness varies: MIN_HARDWARE_BRIGHTNESS to MAX_HARDWARE_BRIGHTNESS
-        - Darkness fixed at: MAX_DARKEN_PERCENT
-        - Example: 0-50% user -> hardware 10-100%, darkness 94%
-        
-        HIGH RANGE (BRIGHTNESS_TRANSITION_POINT to 100):
-        - Hardware brightness fixed at: 100%
-        - Darkness varies: MAX_DARKEN_PERCENT to MIN_DARKEN_PERCENT (with curve)
-        - Example: 50-100% user -> hardware 100%, darkness 94-0%
-        
+
+        UNIFIED CURVE MODEL (no transition / breaking point):
+        Both hardware dimming and per-pixel RGB darkening move together across the
+        whole slider. With p = user% / 100:
+
+            hardware_keep = hw_floor + (1 - hw_floor) * p ** hw_curve
+            rgb_keep      = (1 - darken_floor) + darken_floor * p ** darken_curve
+            darken_percent = 100 * (1 - rgb_keep) = darken_floor*100 * (1 - p**darken_curve)
+
+        At p=0 the lamp sits at (hw_floor, darken_floor) -> dimmest night level;
+        at p=1 it reaches (100%, 0% darken) -> full output. The product of the two
+        smooth monotonic curves gives a regular brightness ramp with no mid-range
+        irregularity.
+
         Args:
             user_brightness: Home Assistant brightness value (1-255)
-        
+
         Returns:
             tuple: (hardware_brightness_percent, darken_percent)
                 - hardware_brightness_percent: 1-100 (Yeelight hardware brightness)
                 - darken_percent: 0-100 (RGB darkening amount)
         """
-        # Clamp to valid range
+        # Clamp to valid range, convert HA brightness (1-255) to fraction p (0-1)
         user_brightness = max(1, min(255, user_brightness))
-        
-        # Convert to percentage (1-255 -> 1-100%)
-        user_brightness_pct = (user_brightness / 255) * 100
-        
-        transition_point = self._calib_brightness_transition
-        min_hw = self._calib_min_hw_brightness
-        max_hw = self._calib_max_hw_brightness
-        max_dark = self._calib_max_darken
-        min_dark = self._calib_min_darken
-        dark_20 = self._calib_dark_at_20
-        dark_50 = self._calib_dark_at_50
-        dark_80 = self._calib_dark_at_80
-        low_min_dark = self._calib_low_min_darken
-        
-        # LOW BRIGHTNESS RANGE: Use hardware dimming + maximum darkness
-        if user_brightness_pct <= transition_point:
-            # Darken ramps from low_min_dark (at 0%) to max_dark (at transition)
-            # This preserves pixel precision at low brightness instead of crushing values
-            if transition_point > 0:
-                position = user_brightness_pct / transition_point  # 0.0 to 1.0
-                darken_percent = low_min_dark + (max_dark - low_min_dark) * position
-                hw_range = max_hw - min_hw
-                hardware_brightness = min_hw + (hw_range * position)
-            else:
-                hardware_brightness = max_hw
-                darken_percent = max_dark
-            
-            hardware_brightness = int(round(max(1, min(100, hardware_brightness))))
-            darken_percent = int(round(max(0, min(100, darken_percent))))
-            
-            _LOGGER.debug(
-                f"[BRIGHTNESS] LOW range: user={user_brightness_pct:.1f}% -> "
-                f"hardware={hardware_brightness}%, darkness={darken_percent}%"
-            )
-            
-            return (hardware_brightness, darken_percent)
-        
-        # HIGH BRIGHTNESS RANGE: Use maximum hardware + darkness curve
-        else:
-            # Hardware brightness is fixed at maximum
-            hardware_brightness = 100
-            
-            # Darkness decreases as brightness increases (with curve control points)
-            # Define control points for smooth interpolation
-            # Control points adapt to transition point:
-            # - If transition=50: use 60, 75, 90 (above transition)
-            # - If transition=30: use 45, 65, 85 (scaled proportionally)
-            high_range = 100 - transition_point
-            cp1 = transition_point + (high_range * 0.2)  # 20% into high range
-            cp2 = transition_point + (high_range * 0.5)  # 50% into high range
-            cp3 = transition_point + (high_range * 0.8)  # 80% into high range
-            
-            control_points = [
-                (transition_point, max_dark),  # At transition: max darkness
-                (cp1, dark_20),         # 20% into high range
-                (cp2, dark_50),         # 50% into high range
-                (cp3, dark_80),         # 80% into high range
-                (100, min_dark),               # At 100%: no darkness
-            ]
-            
-            # Find the two control points to interpolate between
-            darken_percent = min_dark  # Default fallback
-            
-            for i in range(len(control_points) - 1):
-                brightness_low, darken_low = control_points[i]
-                brightness_high, darken_high = control_points[i + 1]
-                
-                if user_brightness_pct <= brightness_high:
-                    # Linear interpolation between the two points
-                    if brightness_high == brightness_low:
-                        darken_percent = darken_low
-                    else:
-                        position = (user_brightness_pct - brightness_low) / (brightness_high - brightness_low)
-                        darken_percent = darken_low + (darken_high - darken_low) * position
-                    
-                    break
-            
-            darken_percent = int(round(max(0, min(100, darken_percent))))
-            
-            _LOGGER.debug(
-                f"[BRIGHTNESS] HIGH range: user={user_brightness_pct:.1f}% -> "
-                f"hardware={hardware_brightness}%, darkness={darken_percent}%"
-            )
-            
-            return (hardware_brightness, darken_percent)
+        p = user_brightness / 255.0
+
+        # Tuning knobs (runtime-tunable). Convert percents to 0-1 fractions.
+        hw_floor = max(0.0, min(1.0, self._calib_hw_floor / 100.0))
+        darken_floor = max(0.0, min(1.0, self._calib_darken_floor / 100.0))
+        hw_curve = max(0.05, self._calib_hw_curve)
+        darken_curve = max(0.05, self._calib_darken_curve)
+
+        # Hardware brightness: floor -> 100%, shaped so it rises fast then flattens.
+        hardware_keep = hw_floor + (1.0 - hw_floor) * (p ** hw_curve)
+        hardware_brightness = int(round(max(1, min(100, hardware_keep * 100.0))))
+
+        # RGB darkening: darken_floor at p=0 down to 0 at p=1.
+        darken_percent = darken_floor * 100.0 * (1.0 - (p ** darken_curve))
+        darken_percent = int(round(max(0, min(100, darken_percent))))
+
+        _LOGGER.debug(
+            f"[BRIGHTNESS] unified: user={p*100:.1f}% -> "
+            f"hardware={hardware_brightness}%, darkness={darken_percent}%"
+        )
+
+        return (hardware_brightness, darken_percent)
 
     
     def __init__(self, cube_matrix: CubeMatrix, ip: str, config_entry: ConfigEntry):
@@ -942,11 +829,18 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         # set_color_accuracy still exists to toggle at runtime but the default is ON.
         self._color_accuracy_enabled = True  # Per-channel gain to match monitor colours
         
+        # Calibration lock: when True the lamp ignores display/brightness commands
+        # from automations so the calibration wizard can drive it exclusively.
+        # Wizard calls carry bypass_lock=True to override this. A safety timer
+        # auto-releases the lock if the wizard is abandoned (browser closed).
+        self._calibration_lock = False
+        self._calibration_lock_unsub = None
+        
         # Calibration overrides (runtime-tunable via set_color_calibration)
         # System 1: Low-brightness gamma correction
         self._calib_gamma_r = 0.85
         self._calib_gamma_g = 0.75
-        self._calib_gamma_b = 0.65
+        self._calib_gamma_b = 0.62
         self._calib_hw_threshold = 50  # hw% above which correction is OFF
         self._calib_hw_full = 10       # hw% at/below which correction is 100%
         self._calib_channel_balance = 0.7  # 0=pure uniform (hue-safe), 1=per-channel (blue fix)
@@ -954,16 +848,16 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         self._calib_gain_r = 1.00
         self._calib_gain_g = 1.00
         self._calib_gain_b = 1.00
-        # System 3: Brightness curve parameters (override class-level constants)
-        self._calib_brightness_transition = self.BRIGHTNESS_TRANSITION_POINT
-        self._calib_min_hw_brightness = self.MIN_HARDWARE_BRIGHTNESS
-        self._calib_max_hw_brightness = self.MAX_HARDWARE_BRIGHTNESS
-        self._calib_max_darken = self.MAX_DARKEN_PERCENT
-        self._calib_min_darken = self.MIN_DARKEN_PERCENT
-        self._calib_dark_at_20 = self.DARKNESS_AT_20_PCT_HIGH
-        self._calib_dark_at_50 = self.DARKNESS_AT_50_PCT_HIGH
-        self._calib_dark_at_80 = self.DARKNESS_AT_80_PCT_HIGH
-        self._calib_low_min_darken = self.LOW_MIN_DARKEN_PERCENT
+        # System 3: Unified brightness curve parameters (override class constants)
+        self._calib_hw_floor = self.HW_FLOOR_PERCENT
+        self._calib_darken_floor = self.DARKEN_FLOOR_PERCENT
+        self._calib_hw_curve = self.HW_CURVE_EXPONENT
+        self._calib_darken_curve = self.DARKEN_CURVE_EXPONENT
+        # Per-channel minimum lit value (lowest value a channel renders cleanly).
+        # 1 = LED can go fully low (e.g. red); raise for channels that need more.
+        self._calib_floor_r = 1
+        self._calib_floor_g = 1
+        self._calib_floor_b = 1
         
         # Retry task: schedules a display retry after connection errors
         # so the lamp eventually recovers when the device becomes reachable.
@@ -1211,7 +1105,52 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
 
     MAX_DISPLAY_RETRIES = 3  # 3 retries ~= 20s total, then health check takes over
 
-    def _maybe_schedule_retry(self):
+    # Calibration lock auto-release: if the wizard is abandoned (browser closed
+    # without exiting), the lamp would stay frozen forever. The lock auto-releases
+    # after this many seconds. The wizard sends periodic re-locks (heartbeat) that
+    # reset this timer, so it only fires once the wizard truly stops talking.
+    CALIBRATION_LOCK_TIMEOUT = 900  # 15 minutes
+
+    @callback
+    def _set_calibration_lock(self, enabled: bool):
+        """Enable/disable the exclusive calibration lock and (re)arm the safety
+        auto-release timer. Re-enabling acts as a heartbeat that pushes back the
+        auto-release."""
+        if self._calibration_lock_unsub is not None:
+            self._calibration_lock_unsub.cancel()
+            self._calibration_lock_unsub = None
+        self._calibration_lock = bool(enabled)
+        if enabled:
+            self._calibration_lock_unsub = self.hass.loop.call_later(
+                self.CALIBRATION_LOCK_TIMEOUT, self._auto_release_calibration_lock
+            )
+            _LOGGER.info(
+                f"[CALIB_LOCK] [{self._ip}] Calibration lock ENABLED -- automation "
+                f"display/brightness commands will be ignored (auto-release in "
+                f"{self.CALIBRATION_LOCK_TIMEOUT}s)"
+            )
+        else:
+            _LOGGER.info(
+                f"[CALIB_LOCK] [{self._ip}] Calibration lock DISABLED -- lamp resumes "
+                f"normal command handling"
+            )
+        if self.hass is not None:
+            self.async_schedule_update_ha_state()
+
+    @callback
+    def _auto_release_calibration_lock(self):
+        """Safety net: release the lock if the wizard heartbeat stops."""
+        self._calibration_lock_unsub = None
+        if self._calibration_lock:
+            self._calibration_lock = False
+            _LOGGER.warning(
+                f"[CALIB_LOCK] [{self._ip}] Calibration lock auto-released after "
+                f"{self.CALIBRATION_LOCK_TIMEOUT}s of inactivity (wizard abandoned?)"
+            )
+            if self.hass is not None:
+                self.async_schedule_update_ha_state()
+
+
         """Schedule a display retry if the retry limit hasn't been reached.
         
         Thin wrapper that avoids log-spam: only logs 'stopping' ONCE when the
@@ -1573,16 +1512,14 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             "calib_gain_r": self._calib_gain_r,
             "calib_gain_g": self._calib_gain_g,
             "calib_gain_b": self._calib_gain_b,
-            # Brightness curve calibration
-            "calib_brightness_transition": self._calib_brightness_transition,
-            "calib_min_hw_brightness": self._calib_min_hw_brightness,
-            "calib_max_hw_brightness": self._calib_max_hw_brightness,
-            "calib_max_darken": self._calib_max_darken,
-            "calib_min_darken": self._calib_min_darken,
-            "calib_dark_at_20": self._calib_dark_at_20,
-            "calib_dark_at_50": self._calib_dark_at_50,
-            "calib_dark_at_80": self._calib_dark_at_80,
-            "calib_low_min_darken": self._calib_low_min_darken,
+            # Brightness curve calibration (unified model)
+            "calib_hw_floor": self._calib_hw_floor,
+            "calib_darken_floor": self._calib_darken_floor,
+            "calib_hw_curve": self._calib_hw_curve,
+            "calib_darken_curve": self._calib_darken_curve,
+            "calib_floor_r": self._calib_floor_r,
+            "calib_floor_g": self._calib_floor_g,
+            "calib_floor_b": self._calib_floor_b,
             "last_hardware_brightness": self._last_hardware_brightness,
             # Transition settings
             "transition_type": self._transition_type,
@@ -1804,6 +1741,11 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         if self._health_check_task and not self._health_check_task.done():
             self._health_check_task.cancel()
         
+        # Cancel calibration-lock auto-release timer
+        if self._calibration_lock_unsub is not None:
+            self._calibration_lock_unsub.cancel()
+            self._calibration_lock_unsub = None
+        
         # Cancel all background tasks (fire-and-forget brightness commands)
         if self._background_tasks:
             _LOGGER.debug(f"[CLEANUP] Cancelling {len(self._background_tasks)} background tasks")
@@ -1944,6 +1886,14 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         """Turn on the light."""
         _LOGGER.debug(f"[TURN_ON] async_turn_on called with kwargs: {kwargs}")
         
+        # Calibration lock: ignore automation turn_on (incl. light.turn_on with
+        # brightness/colour/text) while the wizard owns the lamp.
+        if self._calibration_lock:
+            _LOGGER.debug(
+                f"[CALIB_LOCK] [{self._ip}] turn_on ignored -- calibration lock active"
+            )
+            return
+        
         # Update HA state IMMEDIATELY for responsive UI
         self._is_on = True
         if "brightness" in kwargs:
@@ -2019,6 +1969,13 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         """Turn off the light."""
         _LOGGER.debug(f"[TURN_OFF] async_turn_off called")
         
+        # Calibration lock: ignore automation turn_off while the wizard runs.
+        if self._calibration_lock:
+            _LOGGER.debug(
+                f"[CALIB_LOCK] [{self._ip}] turn_off ignored -- calibration lock active"
+            )
+            return
+        
         # Update HA state IMMEDIATELY for responsive UI
         self._is_on = False
         if self.hass is not None:
@@ -2077,6 +2034,15 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         - Queue dropping: obsolete brightness calls are automatically dropped
         - Parallel execution: hardware + display updates run simultaneously when both change
         """
+        # Calibration lock: ignore automation brightness changes while the wizard
+        # drives the lamp. Wizard calls pass bypass_lock=True.
+        bypass_lock = kwargs.pop("bypass_lock", False)
+        if self._calibration_lock and not bypass_lock:
+            _LOGGER.debug(
+                f"[CALIB_LOCK] [{self._ip}] set_brightness({brightness}) ignored "
+                f"-- calibration lock active"
+            )
+            return
         call_id = int(time.time() * 1000) % 100000
         _LOGGER.debug(
             f"[BRIGHTNESS_DIAG] [{self._ip}] SET_BRIGHTNESS called: "
@@ -2422,8 +2388,18 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         if self._is_on:
             await self.async_apply_display_mode(update_type='text_change')
 
-    async def async_apply_display_mode(self, update_type: str = 'display_update'):
+    async def async_apply_display_mode(self, update_type: str = 'display_update', bypass_lock: bool = False):
         """Queue a display mode update to be processed sequentially"""
+        # Calibration lock: while the wizard owns the lamp, drop every display
+        # update that doesn't explicitly bypass the lock (i.e. anything not coming
+        # from the wizard). This freezes the panel on the wizard's test pattern so
+        # automations (custom text, pixel art, clock, sensors...) can't disturb it.
+        if self._calibration_lock and not bypass_lock:
+            _LOGGER.debug(
+                f"[CALIB_LOCK] [{self._ip}] Display update '{update_type}' ignored "
+                f"-- calibration lock active"
+            )
+            return
         # NOTE: _apply_cooldown removed. It was silently DROPPING updates
         # when they arrived within 100ms of each other (e.g., rapid pixel
         # drawing or fast slider changes). The queue's coalescing logic
@@ -5004,6 +4980,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     async def handle_apply_custom_pixels(service_call):
         pixels = service_call.data.get("pixels")
+        bypass_lock = bool(service_call.data.get("bypass_lock", False))
         _LOGGER.debug(f"[pixelart-backend] apply_custom_pixels: pixels={len(pixels) if pixels else 0}")
         if not pixels or not isinstance(pixels, list):
             _LOGGER.error(f"[pixelart-backend] apply_custom_pixels: No valid pixels provided.")
@@ -5027,7 +5004,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             target_entity._is_scrolling = False
             if target_entity.hass is not None:
                 target_entity.async_schedule_update_ha_state()
-            await target_entity.async_apply_display_mode(update_type='pixel_art')
+            await target_entity.async_apply_display_mode(update_type='pixel_art', bypass_lock=bypass_lock)
 
         _fire_and_forget(*[_apply_one(t) for t in targets])
 
@@ -5124,6 +5101,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async def handle_set_brightness(service_call):
         """Set brightness using Home Assistant's light.turn_on service (1-100%)."""
         brightness_pct = service_call.data.get("brightness", 100)
+        bypass_lock = bool(service_call.data.get("bypass_lock", False))
         
         # Clamp to 1-100 range
         brightness_pct = max(1, min(100, brightness_pct))
@@ -5140,16 +5118,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.debug(f"[SET_BRIGHTNESS] Setting brightness to {brightness_pct}% (HA value: {ha_brightness}) for {target_entity.entity_id}")
         
         try:
-            # Use standard Home Assistant light.turn_on service
-            await hass.services.async_call(
-                "light",
-                "turn_on",
-                {
-                    "entity_id": target_entity.entity_id,
-                    "brightness": ha_brightness,
-                },
-                blocking=True
-            )
+            if bypass_lock:
+                # Wizard path: call the entity method directly so it bypasses the
+                # calibration lock (light.turn_on is blocked while locked).
+                await target_entity.set_brightness(ha_brightness, bypass_lock=True)
+            else:
+                # Use standard Home Assistant light.turn_on service
+                await hass.services.async_call(
+                    "light",
+                    "turn_on",
+                    {
+                        "entity_id": target_entity.entity_id,
+                        "brightness": ha_brightness,
+                    },
+                    blocking=True
+                )
             _LOGGER.debug(f"[SET_BRIGHTNESS] Successfully set brightness to {brightness_pct}%")
         except Exception as e:
             _LOGGER.error(f"[SET_BRIGHTNESS] Failed to set brightness: {e}")
@@ -5945,16 +5928,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             "gain_r": "_calib_gain_r",
             "gain_g": "_calib_gain_g",
             "gain_b": "_calib_gain_b",
-            # System 3: Brightness curve
-            "brightness_transition": "_calib_brightness_transition",
-            "min_hw_brightness": "_calib_min_hw_brightness",
-            "max_hw_brightness": "_calib_max_hw_brightness",
-            "max_darken": "_calib_max_darken",
-            "min_darken": "_calib_min_darken",
-            "dark_at_20": "_calib_dark_at_20",
-            "dark_at_50": "_calib_dark_at_50",
-            "dark_at_80": "_calib_dark_at_80",
-            "low_min_darken": "_calib_low_min_darken",
+            # System 3: Unified brightness curve
+            "hw_floor": "_calib_hw_floor",
+            "darken_floor": "_calib_darken_floor",
+            "hw_curve": "_calib_hw_curve",
+            "darken_curve": "_calib_darken_curve",
+            "floor_r": "_calib_floor_r",
+            "floor_g": "_calib_floor_g",
+            "floor_b": "_calib_floor_b",
         }
 
         async def _apply_one(target_entity):
@@ -5990,16 +5971,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             vol.Optional("gain_r"): vol.Coerce(float),
             vol.Optional("gain_g"): vol.Coerce(float),
             vol.Optional("gain_b"): vol.Coerce(float),
-            # System 3: Brightness curve
-            vol.Optional("brightness_transition"): vol.Coerce(int),
-            vol.Optional("min_hw_brightness"): vol.Coerce(int),
-            vol.Optional("max_hw_brightness"): vol.Coerce(int),
-            vol.Optional("max_darken"): vol.Coerce(int),
-            vol.Optional("min_darken"): vol.Coerce(int),
-            vol.Optional("dark_at_20"): vol.Coerce(int),
-            vol.Optional("dark_at_50"): vol.Coerce(int),
-            vol.Optional("dark_at_80"): vol.Coerce(int),
-            vol.Optional("low_min_darken"): vol.Coerce(int),
+            # System 3: Unified brightness curve
+            vol.Optional("hw_floor"): vol.Coerce(int),
+            vol.Optional("darken_floor"): vol.Coerce(int),
+            vol.Optional("hw_curve"): vol.Coerce(float),
+            vol.Optional("darken_curve"): vol.Coerce(float),
+            vol.Optional("floor_r"): vol.Coerce(int),
+            vol.Optional("floor_g"): vol.Coerce(int),
+            vol.Optional("floor_b"): vol.Coerce(int),
+            vol.Required("entity_id"): _entity_id_or_list,
+        })
+    )
+
+    async def handle_set_calibration_lock(service_call):
+        """Take/release exclusive control of the lamp for the calibration wizard.
+        While locked, the lamp ignores display/brightness/turn_on commands that
+        don't carry bypass_lock=True (i.e. everything except the wizard itself),
+        so automations can't disturb the calibration session."""
+        targets = _resolve_entities(service_call, "SET_CALIBRATION_LOCK")
+        if not targets:
+            return
+        enabled = bool(service_call.data.get("enabled", False))
+
+        async def _apply_one(target_entity):
+            target_entity._set_calibration_lock(enabled)
+
+        _fire_and_forget(*[_apply_one(t) for t in targets])
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_calibration_lock",
+        handle_set_calibration_lock,
+        schema=vol.Schema({
+            vol.Required("enabled"): vol.Coerce(bool),
             vol.Required("entity_id"): _entity_id_or_list,
         })
     )

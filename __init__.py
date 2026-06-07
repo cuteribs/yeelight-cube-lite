@@ -349,14 +349,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Register cards as Lovelace resources (same mechanism as HACS plugins).
         # This is more reliable than add_extra_js_url because HA loads these
         # resources the same way as Mushroom, card-mod, and other HACS cards.
+        #
+        # Only register cards whose JS file actually exists on disk. Some cards
+        # (e.g. the internal-only calibration card) are excluded from the public
+        # repo via .gitignore, so on production installs the file is absent and
+        # we simply skip registering a dangling resource.
+        _www_dir = os.path.join(os.path.dirname(__file__), "www")
+        _available_card_files = [
+            cf for cf in FRONTEND_CARD_FILES
+            if os.path.isfile(os.path.join(_www_dir, cf))
+        ]
         await _async_register_lovelace_resources(
-            hass, FRONTEND_CARD_FILES, FRONTEND_URL_BASE, _version
+            hass, _available_card_files, FRONTEND_URL_BASE, _version
         )
 
         # Also register via add_extra_js_url as a fallback
         try:
             from homeassistant.components.frontend import add_extra_js_url  # type: ignore
-            for card_file in FRONTEND_CARD_FILES:
+            for card_file in _available_card_files:
                 card_url = f"{FRONTEND_URL_BASE}/{card_file}?v={_version}"
                 add_extra_js_url(hass, card_url)
         except (ImportError, Exception):

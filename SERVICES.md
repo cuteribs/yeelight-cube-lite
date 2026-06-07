@@ -367,8 +367,7 @@ pixels:
   # ...
 ```
 
-> [!NOTE]
-> HA's developer tools serializes the response in YAML block style (each list item on its own line). This is cosmetically different from the compact inline form shown above, but represents identical data and can be copy-pasted directly into any service call.
+<blockquote><strong>ℹ️ Note:</strong> HA's developer tools serializes the response in YAML block style (each list item on its own line). This is cosmetically different from the compact inline form shown above, but represents identical data and can be copy-pasted directly into any service call.</blockquote>
 
 </details>
 
@@ -657,7 +656,7 @@ data:
 
 ## ⚙️ Configuration Services
 
-Adjust brightness, color effects, and hardware calibration.
+Adjust brightness and real-time color effects.
 
 ### `set_brightness`
 
@@ -752,78 +751,10 @@ data:
 
 ### `set_color_calibration`
 
-Advanced calibration service for the hardware color correction pipeline. All parameters are optional — only provided values are updated. Changes take effect immediately but are **not persisted across restarts**. This service is designed for iterative tuning; once you find values that work, update the corresponding code defaults.
-
 > [!NOTE]
-> These parameters are tuned interactively using the internal Calibration Card. The Calibration Card is not part of the public component release.
-
-The color pipeline has three independent systems:
-
-#### System 1 — Per-channel gamma curve
-
-Soft-corrects colors at low brightness by applying a per-channel inverse gamma curve. Useful when the lamp's physical LEDs produce off-hue colors at dim settings.
-
-| Field | Default | Range | Description |
-| :-- | :-- | :-- | :-- |
-| `gamma_r` | `0.85` | 0.1–1.0 | Red gamma correction. Lower = stronger boost on the red channel at low brightness |
-| `gamma_g` | `0.75` | 0.1–1.0 | Green gamma correction. Default is lower than red because green LEDs tend to be stronger |
-| `gamma_b` | `0.65` | 0.1–1.0 | Blue gamma correction. Generally needs the strongest correction to prevent washed-out blues |
-| `hw_threshold` | `50` | 10–100 | Hardware brightness % above which gamma correction is fully **off**. At higher brightness the raw LED colors are more accurate |
-| `hw_full` | `10` | 1–50 | Hardware brightness % at/below which gamma correction is fully **on** (100%). Between `hw_full` and `hw_threshold`, correction blends smoothly from 100% → 0% |
-| `channel_balance` | `0.5` | 0.0–1.0 | Blend between uniform correction (`0` = hue-safe, same curve on all channels) and per-channel correction (`1.0` = each channel corrected independently). Values near 1.0 improve blue/purple accuracy but may shift hues slightly |
-
-#### System 2 — Per-channel gain multipliers
-
-A linear gain multiplier applied to each RGB channel after rendering, always active. Used to compensate for the lamp's color channel imbalance — LEDs of different colors emit at different intensities, causing neutral white to look greenish and blues to appear washed-out.
-
-| Field | Default | Range | Description |
-| :-- | :-- | :-- | :-- |
-| `gain_r` | `1.00` | 0.5–1.5 | Red channel multiplier. At `1.00` no scaling is applied |
-| `gain_g` | `0.87` | 0.5–1.5 | Green channel multiplier. Reducing below `1.0` fixes the typical green-cast in whites and yellows |
-| `gain_b` | `0.72` | 0.5–1.5 | Blue channel multiplier. Reducing below `1.0` makes deep blues and purples richer instead of faded |
-
-#### System 3 — Brightness curve
-
-Controls how the user-facing brightness slider (1–100%) maps to the hardware brightness register and an optional per-pixel RGB darkening pass. Using RGB darkening at low brightness values provides smoother dimming than the hardware PWM alone.
-
-| Field | Default | Range | Description |
-| :-- | :-- | :-- | :-- |
-| `brightness_transition` | `25` | 5–80 | User brightness % that separates the low range (RGB darkening) from the high range (hardware PWM). Below this threshold the hardware stays at `max_hw_brightness` and only RGB darkening changes |
-| `min_hw_brightness` | `1` | 1–50 | Hardware brightness % used at 0% user brightness |
-| `max_hw_brightness` | `100` | 50–100 | Hardware brightness % used at the `brightness_transition` point |
-| `max_darken` | `94` | 50–100 | RGB darkening % at 0% user brightness (bottom of the low range). A value of `94` means pixels are multiplied by 0.06 |
-| `min_darken` | `0` | 0–50 | RGB darkening % at 100% user brightness. `0` = full color output |
-| `dark_at_20` | `85` | 0–100 | RGB darkening % at 20% into the high range (between `brightness_transition` and 100%). Shapes the high-range brightness curve |
-| `dark_at_50` | `70` | 0–100 | RGB darkening % at 50% into the high range |
-| `dark_at_80` | `40` | 0–100 | RGB darkening % at 80% into the high range |
-| `low_min_darken` | `80` | 0–100 | RGB darkening % at the very bottom of the low range (0% user brightness). Lower values retain more per-pixel color variation at minimum brightness |
-
-| Field | Required | Description |
-| :-- | :-- | :-- |
-| `entity_id` | Yes | Target lamp entity |
-
-```yaml
-action: yeelight_cube.set_color_calibration
-data:
-  # System 1 — gamma curve
-  gamma_r: 0.85
-  gamma_g: 0.75
-  gamma_b: 0.65
-  hw_threshold: 50
-  hw_full: 10
-  channel_balance: 0.5
-  # System 2 — gain
-  gain_r: 1.00
-  gain_g: 0.87
-  gain_b: 0.72
-  # System 3 — brightness curve
-  brightness_transition: 25
-  max_darken: 94
-  dark_at_20: 85
-  dark_at_50: 70
-  dark_at_80: 40
-  entity_id: light.cubelite_192_168_4_102
-```
+> This is a **development-only** service for tuning the internal color/brightness pipeline at runtime. It is intentionally not documented here because the values are low-level, change with hardware revisions, and are not exposed through any user-facing card or entity.
+>
+> The full parameter reference, the meaning of each correction stage, and the recommended tuning workflow live in the advanced developer guide: **[docs/ADVANCED_CALIBRATION.md](docs/ADVANCED_CALIBRATION.md)**.
 
 ---
 
@@ -1118,7 +1049,7 @@ Some services return data that can be used in automations.
 | **Palettes** | `save_palette`, `load_palette`, `set_palettes` | Manage color collections |
 | **Text Settings** | `set_font`, `set_alignment`, `set_orientation` | Text formatting |
 | **Color Effects** | `set_preview_adjustments`, `set_color_accuracy` | Real-time color adjustments |
-| **Calibration** | `set_color_calibration`, `force_refresh` | Hardware tuning & lamp recovery |
+| **Recovery** | `force_refresh` | Reconnect & re-send display state |
 | **Management** | `create_cube_discovery`, `test_display`, `force_rediscovery` | Device setup & diagnostics |
 
 ---

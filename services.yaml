@@ -739,6 +739,29 @@ set_color_accuracy:
         entity:
           domain: light
 
+set_calibration_lock:
+  name: Set Calibration Lock (Internal)
+  description: >
+    Take or release exclusive control of the lamp for the calibration wizard.
+    While locked, the lamp ignores display, brightness, and turn on/off commands
+    coming from automations or other cards, so the wizard's test patterns are not
+    disturbed mid-session.  The lock auto-releases after 15 minutes of inactivity
+    as a safety net.  Used internally by the calibration card.
+  fields:
+    enabled:
+      description: Enable (take control) or disable (release control) the lock.
+      example: true
+      required: true
+      selector:
+        boolean:
+    entity_id:
+      description: Target lamp entity ID (e.g. light.cubelite_192_168_4_102).
+      example: "light.yeelight_cube_192_168_1_100"
+      required: true
+      selector:
+        entity:
+          domain: light
+
 set_color_calibration:
   name: Set Color Calibration (Debug)
   description: >
@@ -767,8 +790,8 @@ set_color_calibration:
           step: 0.01
           mode: slider
     gamma_b:
-      description: "System 1 — Blue inverse gamma. Default: 0.65"
-      example: 0.65
+      description: "System 1 — Blue inverse gamma. Default: 0.62"
+      example: 0.62
       required: false
       selector:
         number:
@@ -807,8 +830,8 @@ set_color_calibration:
           step: 0.01
           mode: slider
     gain_g:
-      description: "System 2 — Green channel gain multiplier. Default: 0.87"
-      example: 0.87
+      description: "System 2 — Green channel gain multiplier. Default: 1.00"
+      example: 1.00
       required: false
       selector:
         number:
@@ -817,8 +840,8 @@ set_color_calibration:
           step: 0.01
           mode: slider
     gain_b:
-      description: "System 2 — Blue channel gain multiplier. Default: 0.72"
-      example: 0.72
+      description: "System 2 — Blue channel gain multiplier. Default: 1.00"
+      example: 1.00
       required: false
       selector:
         number:
@@ -826,59 +849,19 @@ set_color_calibration:
           max: 1.5
           step: 0.01
           mode: slider
-    brightness_transition:
-      description: "System 3 — User brightness % where low/high modes switch. Default: 25"
-      example: 25
-      required: false
-      selector:
-        number:
-          min: 5
-          max: 80
-          step: 1
-          mode: slider
-    min_hw_brightness:
-      description: "System 3 — Minimum hardware brightness % at lowest user brightness. Default: 1"
+    hw_floor:
+      description: "System 3 — Hardware brightness % at 0% user brightness (sets dimmest LED drive). Default: 1"
       example: 1
       required: false
       selector:
         number:
           min: 1
-          max: 50
-          step: 1
-          mode: slider
-    max_hw_brightness:
-      description: "System 3 — Hardware brightness % at transition point. Default: 100"
-      example: 100
-      required: false
-      selector:
-        number:
-          min: 50
           max: 100
           step: 1
           mode: slider
-    max_darken:
-      description: "System 3 — Maximum RGB darkening % at transition point. Default: 94"
-      example: 94
-      required: false
-      selector:
-        number:
-          min: 50
-          max: 100
-          step: 1
-          mode: slider
-    min_darken:
-      description: "System 3 — Minimum RGB darkening % at 100% user brightness. Default: 0"
-      example: 0
-      required: false
-      selector:
-        number:
-          min: 0
-          max: 50
-          step: 1
-          mode: slider
-    dark_at_20:
-      description: "System 3 — Darkness % at 20% into high range. Default: 85"
-      example: 85
+    darken_floor:
+      description: "System 3 — RGB darkening % at 0% user brightness (sets dimmest per-pixel math). Default: 97"
+      example: 97
       required: false
       selector:
         number:
@@ -886,28 +869,28 @@ set_color_calibration:
           max: 100
           step: 1
           mode: slider
-    dark_at_50:
-      description: "System 3 — Darkness % at 50% into high range. Default: 70"
-      example: 70
+    hw_curve:
+      description: "System 3 — Hardware curve exponent. <1 rises fast then flattens near 100%. Default: 0.5"
+      example: 0.5
       required: false
       selector:
         number:
-          min: 0
-          max: 100
-          step: 1
+          min: 0.1
+          max: 3.0
+          step: 0.05
           mode: slider
-    dark_at_80:
-      description: "System 3 — Darkness % at 80% into high range. Default: 40"
-      example: 40
+    darken_curve:
+      description: "System 3 — Darken curve exponent. >1 keeps colors rich until you dim well down. Default: 2.0"
+      example: 2.0
       required: false
       selector:
         number:
-          min: 0
-          max: 100
-          step: 1
+          min: 0.1
+          max: 4.0
+          step: 0.05
           mode: slider
     channel_balance:
-      description: "System 1 — Blend between uniform (0=hue-safe) and per-channel (1=blue fix) correction. Default: 0.5"
+      description: "System 1 — Blend between uniform (0=hue-safe) and per-channel (1=blue fix) correction. Default: 0.7"
       example: 0.7
       required: false
       selector:
@@ -916,14 +899,34 @@ set_color_calibration:
           max: 1.0
           step: 0.05
           mode: slider
-    low_min_darken:
-      description: "System 3 — Darken % at very bottom of low range (0% brightness). Lower = more pixel precision. Default: 80"
-      example: 80
+    floor_r:
+      description: "Per-channel minimum lit value for red (lowest value the red LED renders cleanly). Default: 1"
+      example: 1
       required: false
       selector:
         number:
-          min: 0
-          max: 100
+          min: 1
+          max: 32
+          step: 1
+          mode: slider
+    floor_g:
+      description: "Per-channel minimum lit value for green. Default: 1"
+      example: 1
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 32
+          step: 1
+          mode: slider
+    floor_b:
+      description: "Per-channel minimum lit value for blue (blue LEDs often need a higher floor). Default: 1"
+      example: 1
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 32
           step: 1
           mode: slider
     entity_id:

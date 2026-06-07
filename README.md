@@ -103,8 +103,7 @@ Before adding the lamp to Home Assistant, you must first set it up using the **Y
   </tr>
 </table>
 
-> [!TIP]
-> You can also find the lamp's IP from your router's admin page or DHCP client list. Assigning a **static IP / DHCP reservation** is recommended.
+<blockquote><strong>💡 Tip:</strong> You can also find the lamp's IP from your router's admin page or DHCP client list. Assigning a <strong>static IP / DHCP reservation</strong> is recommended.</blockquote>
 
 </details>
 
@@ -133,11 +132,9 @@ Once the lamp is on your network with LAN Control enabled, Home Assistant will *
 
    <img src="https://raw.githubusercontent.com/Max-src/yeelight-cube-lite/main/images/Home-Assistant-Integrations-Detail-Page.png" alt="Integration Detail Page">
 
-> [!NOTE]
-> If you also use the official Yeelight integration, it may generate a discovery notification for the same lamp. That notification is **automatically suppressed** by this integration - you can safely ignore it.
+<blockquote><strong>ℹ️ Note:</strong> If you also use the official Yeelight integration, it may generate a discovery notification for the same lamp. That notification is <strong>automatically suppressed</strong> by this integration - you can safely ignore it.</blockquote>
 
-> [!TIP]
-> **IP address changes:** The integration uses auto-rediscovery. If the lamp gets a new IP (e.g. after a router reboot), the integration finds it again automatically.
+<blockquote><strong>💡 Tip:</strong> <strong>IP address changes:</strong> The integration uses auto-rediscovery. If the lamp gets a new IP (e.g. after a router reboot), the integration finds it again automatically.</blockquote>
 
 </details>
 
@@ -163,8 +160,7 @@ If the lamp is not discovered automatically (e.g. different subnet or mDNS is bl
 
    <img src="https://raw.githubusercontent.com/Max-src/yeelight-cube-lite/main/images/Home-Assistant-Integrations-Detail-Page.png" alt="Integration Detail Page">
 
-> [!NOTE]
-> Each lamp needs to be added separately. If you have multiple lamps, repeat the process for each one.
+<blockquote><strong>ℹ️ Note:</strong> Each lamp needs to be added separately. If you have multiple lamps, repeat the process for each one.</blockquote>
 
 </details>
 
