@@ -2,6 +2,7 @@
 
 import logging
 import asyncio
+import copy
 import math
 import random
 import time
@@ -924,6 +925,13 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         self._transition_steps = 5               # Number of intermediate frames (1-10)
         self._transition_duration = 1.0          # Total transition time in seconds (0.2-10.0)
         self._transition_active = False          # Re-entrancy guard
+
+        # -- Saved display state (save_state / restore_state services) ----
+        # Holds a single snapshot of the full display state so an automation
+        # can save what the lamp is showing, display something else briefly,
+        # then restore the original.  Overwritten each time save_state runs.
+        # In-memory only -- does not survive a Home Assistant restart.
+        self._saved_display_state = None
         self._last_sent_colors = None            # List of 100 RGB tuples last sent to lamp
         self._current_update_type = 'display_update'  # Tracks current operation type for transition logic
         
@@ -4202,6 +4210,67 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             self._scroll_timer = None
         _LOGGER.debug("[SCROLL] Timer stopped")
 
+    # Display-state attributes captured by save_state / restore_state.
+    # Together these fully determine what the panel is showing: content,
+    # mode, colors, layout, brightness and all colour effects.
+    _DISPLAY_STATE_ATTRS = (
+        "_custom_text", "_text_colors", "_mode", "_full_panel", "_angle",
+        "_background_color", "_alignment", "_font", "_orientation", "_rgb_color",
+        "_brightness", "_custom_pixels", "_custom_draw_active",
+        "_active_pixel_art_name", "_scroll_enabled", "_scroll_speed",
+        "_preview_hue_shift", "_preview_temperature", "_preview_saturation",
+        "_preview_vibrance", "_preview_contrast", "_preview_glow",
+        "_preview_grayscale", "_preview_invert", "_preview_tint_hue",
+        "_preview_tint_strength", "_preview_darken", "_preview_brighten",
+        "_is_on",
+    )
+
+    def _save_display_state(self):
+        """Snapshot the current display state into self._saved_display_state.
+
+        Overwrites any previously saved snapshot -- only one is kept per
+        entity.  Values are deep-copied so later mutations to lists like
+        _custom_pixels / _text_colors don't corrupt the snapshot."""
+        self._saved_display_state = {
+            attr: copy.deepcopy(getattr(self, attr, None))
+            for attr in self._DISPLAY_STATE_ATTRS
+        }
+
+    def _restore_display_state(self):
+        """Restore attributes from the saved snapshot and refresh linked
+        helper entities.  Returns True if a snapshot existed, False otherwise.
+        The caller is responsible for triggering the hardware re-render."""
+        snapshot = self._saved_display_state
+        if not snapshot:
+            return False
+        for attr, value in snapshot.items():
+            setattr(self, attr, copy.deepcopy(value))
+        # Reset scroll so restored text starts cleanly from the beginning.
+        self._scroll_offset = 0
+        self._scroll_direction = 1
+        self.stop_scroll_timer()
+        self._refresh_linked_entities()
+        return True
+
+    def _refresh_linked_entities(self):
+        """Push the current state out to the linked text/select/number helper
+        entities so the UI controls reflect the restored values."""
+        for ref in (
+            self._text_input_entity,
+            self._pixel_art_select_entity,
+            self._mode_select_entity,
+            self._alignment_select_entity,
+            self._font_select_entity,
+            self._angle_number_entity,
+        ):
+            if ref is not None and getattr(ref, "hass", None) is not None:
+                update = getattr(ref, "async_update_from_light", None)
+                if update:
+                    update()
+        for entity in self._preview_number_entities.values():
+            if getattr(entity, "hass", None) is not None:
+                entity.async_update_from_light()
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> bool:
     # Create and register the light entity FIRST (this happens for EVERY device)
     ip = entry.data[CONF_IP]
@@ -6004,6 +6073,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         handle_set_calibration_lock,
         schema=vol.Schema({
             vol.Required("enabled"): vol.Coerce(bool),
+            vol.Required("entity_id"): _entity_id_or_list,
+        })
+    )
+
+    async def handle_save_state(service_call):
+        """Snapshot the current display state (text/colors/mode/gradient/drawing/
+        effects/brightness) so it can be restored later with restore_state.
+        Only ONE snapshot is kept per entity -- calling again overwrites it.
+        Supports multi-entity parallel dispatch."""
+        targets = _resolve_entities(service_call, "SAVE_STATE")
+        if not targets:
+            return
+
+        async def _apply_one(target_entity):
+            target_entity._save_display_state()
+            _LOGGER.debug(f"[SAVE_STATE] Saved display state for {target_entity.entity_id}")
+
+        _fire_and_forget(*[_apply_one(t) for t in targets])
+
+    hass.services.async_register(
+        DOMAIN,
+        "save_state",
+        handle_save_state,
+        schema=vol.Schema({
+            vol.Required("entity_id"): _entity_id_or_list,
+        })
+    )
+
+    async def handle_restore_state(service_call):
+        """Restore the display state previously captured by save_state and
+        re-render it on the lamp.  Does nothing (logs a warning) if no state
+        was saved.  Supports multi-entity parallel dispatch."""
+        targets = _resolve_entities(service_call, "RESTORE_STATE")
+        if not targets:
+            return
+
+        async def _apply_one(target_entity):
+            if not target_entity._restore_display_state():
+                _LOGGER.warning(
+                    f"[RESTORE_STATE] No saved state for {target_entity.entity_id} -- "
+                    f"call save_state first"
+                )
+                return
+            if target_entity.hass is not None:
+                target_entity.async_schedule_update_ha_state()
+            await target_entity.async_apply_display_mode(update_type='color_change')
+            _LOGGER.debug(f"[RESTORE_STATE] Restored display state for {target_entity.entity_id}")
+
+        _fire_and_forget(*[_apply_one(t) for t in targets])
+
+    hass.services.async_register(
+        DOMAIN,
+        "restore_state",
+        handle_restore_state,
+        schema=vol.Schema({
             vol.Required("entity_id"): _entity_id_or_list,
         })
     )

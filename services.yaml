@@ -716,6 +716,38 @@ force_refresh:
         entity:
           domain: light
 
+save_state:
+  name: Save State
+  description: >
+    Snapshot the lamp's current display state (text, colors, gradient mode,
+    angle, drawing/pixel art, font, alignment, orientation, brightness and all
+    colour effects). Only one snapshot is kept per lamp; calling again
+    overwrites it. Pair with restore_state to show something temporarily and
+    then return to what was displayed before. Note: the snapshot is held in
+    memory and does not survive a Home Assistant restart.
+  fields:
+    entity_id:
+      description: Target lamp entity ID (e.g. light.cubelite_192_168_4_102). Must be provided for direct service calls.
+      example: "light.yeelight_cube_192_168_1_100"
+      required: true
+      selector:
+        entity:
+          domain: light
+
+restore_state:
+  name: Restore State
+  description: >
+    Restore the display state previously captured with save_state and
+    re-render it on the lamp. Does nothing if no state was saved.
+  fields:
+    entity_id:
+      description: Target lamp entity ID (e.g. light.cubelite_192_168_4_102). Must be provided for direct service calls.
+      example: "light.yeelight_cube_192_168_1_100"
+      required: true
+      selector:
+        entity:
+          domain: light
+
 set_color_accuracy:
   name: Set Color Accuracy
   description: >

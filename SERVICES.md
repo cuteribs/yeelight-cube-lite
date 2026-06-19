@@ -749,6 +749,65 @@ data:
 
 ---
 
+### `save_state`
+
+Snapshot the lamp's current display state so it can be restored later. Captures everything that determines what is shown: text, text/gradient colors, display mode, gradient angle, full-panel setting, drawing/pixel art, font, alignment, orientation, brightness and all color effects.
+
+Only **one** snapshot is kept per lamp — calling `save_state` again overwrites the previous one.
+
+| Field | Required | Description |
+| :-- | :-- | :-- |
+| `entity_id` | Yes | Target lamp entity. Supports a list for multiple lamps. |
+
+```yaml
+action: yeelight_cube.save_state
+data:
+  entity_id: light.cubelite_192_168_4_102
+```
+
+> [!NOTE]
+> The snapshot is held in memory and does **not** survive a Home Assistant restart.
+
+---
+
+### `restore_state`
+
+Restore the display state previously captured with [`save_state`](#save_state) and re-render it on the lamp. Does nothing (logs a warning) if no state was saved.
+
+| Field | Required | Description |
+| :-- | :-- | :-- |
+| `entity_id` | Yes | Target lamp entity. Supports a list for multiple lamps. |
+
+```yaml
+action: yeelight_cube.restore_state
+data:
+  entity_id: light.cubelite_192_168_4_102
+```
+
+**Typical use — show something temporarily, then return to normal:**
+
+```yaml
+# 1. Remember what the lamp is currently showing
+- action: yeelight_cube.save_state
+  data:
+    entity_id: light.cubelite_192_168_4_102
+
+# 2. Display a temporary alert
+- action: yeelight_cube.set_custom_text
+  data:
+    text: "DOORBELL"
+    entity_id: light.cubelite_192_168_4_102
+
+- delay: "00:00:10"
+
+# 3. Put back whatever was showing before
+- action: yeelight_cube.restore_state
+  data:
+    entity_id: light.cubelite_192_168_4_102
+```
+
+---
+
 ### `set_color_calibration`
 
 > [!NOTE]
@@ -1049,6 +1108,7 @@ Some services return data that can be used in automations.
 | **Palettes** | `save_palette`, `load_palette`, `set_palettes` | Manage color collections |
 | **Text Settings** | `set_font`, `set_alignment`, `set_orientation` | Text formatting |
 | **Color Effects** | `set_preview_adjustments`, `set_color_accuracy` | Real-time color adjustments |
+| **State** | `save_state`, `restore_state` | Snapshot & restore what's displayed |
 | **Recovery** | `force_refresh` | Reconnect & re-send display state |
 | **Management** | `create_cube_discovery`, `test_display`, `force_rediscovery` | Device setup & diagnostics |
 

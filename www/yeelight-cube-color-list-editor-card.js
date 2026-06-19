@@ -2336,7 +2336,9 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
         try {
           const primaryEntity = this._getPrimaryEntity();
           if (!primaryEntity) {
-            console.error("[ColorList Card] No primary entity available for save_palette");
+            console.error(
+              "[ColorList Card] No primary entity available for save_palette",
+            );
             return;
           }
           await this._hass.callService("yeelight_cube", "save_palette", {
