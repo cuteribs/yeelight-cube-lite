@@ -6256,17 +6256,25 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
   }
 }
 
-customElements.define(
-  "yeelight-cube-color-list-editor-card",
-  YeelightCubeColorListEditorCard,
-);
+if (!customElements.get("yeelight-cube-color-list-editor-card")) {
+  customElements.define(
+    "yeelight-cube-color-list-editor-card",
+    YeelightCubeColorListEditorCard,
+  );
+}
 
 if (typeof window !== "undefined") {
   window.customCards = window.customCards || [];
-  window.customCards.push({
-    type: "yeelight-cube-color-list-editor-card",
-    name: "Yeelight Colors Card",
-    description: "Edit the list of text colors for the Yeelight Cube Lite.",
-    preview: true,
-  });
+  if (
+    !window.customCards.some(
+      (c) => c.type === "yeelight-cube-color-list-editor-card",
+    )
+  ) {
+    window.customCards.push({
+      type: "yeelight-cube-color-list-editor-card",
+      name: "Yeelight Colors Card",
+      description: "Edit the list of text colors for the Yeelight Cube Lite.",
+      preview: true,
+    });
+  }
 }

@@ -563,7 +563,9 @@ class YeelightCubePaletteCardEditor extends LitElement {
   }
 }
 
-customElements.define(
-  "yeelight-cube-palette-card-editor",
-  YeelightCubePaletteCardEditor,
-);
+if (!customElements.get("yeelight-cube-palette-card-editor")) {
+  customElements.define(
+    "yeelight-cube-palette-card-editor",
+    YeelightCubePaletteCardEditor,
+  );
+}

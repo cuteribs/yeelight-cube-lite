@@ -184,33 +184,39 @@ class YeelightCubePaletteCard extends HTMLElement {
     // the hash also changes on renames and reorders, so the card refreshes for
     // every kind of palette change -- not just additions/deletions.
     const stateObj = hass.states[entityId];
+    const sensorArr = Array.isArray(stateObj?.attributes?.palettes_v2)
+      ? stateObj.attributes.palettes_v2
+      : Array.isArray(stateObj?.attributes?.palettes)
+        ? stateObj.attributes.palettes
+        : [];
+    const sensorCount = stateObj?.attributes?.count ?? sensorArr.length;
     const currHash =
-      stateObj?.attributes?.content_hash ??
-      `count:${
-        stateObj?.attributes?.count ??
-        stateObj?.attributes?.palettes_v2?.length ??
-        0
-      }`;
+      stateObj?.attributes?.content_hash ?? `count:${sensorCount}`;
     const prevHash = this._lastPaletteHash;
     const isFirstLoad = prevHash === undefined;
 
     // While an optimistic local cache is active (just after a delete), keep
-    // showing it until the backend confirms the change -- detected by the
-    // content_hash differing from the snapshot taken at delete time -- or until
-    // a short safety timeout elapses. Then drop the cache and render the
-    // authoritative sensor list.
+    // showing the correctly-filtered local list until the sensor has fully
+    // caught up. "Caught up" means the authoritative array is itself fresh
+    // (its length matches the reported count) AND that count equals the size
+    // we optimistically rendered. The websocket can deliver an updated `count`
+    // a beat before the full `palettes_v2` array converges, so checking both
+    // avoids briefly re-rendering the stale (pre-delete) array -- which would
+    // make the just-deleted item flash back into the list.
     if (this._localPalettes !== undefined) {
       const cacheAge = Date.now() - (this._localPalettesTimestamp || 0);
-      const serverResponded = currHash !== this._localPalettesBaseHash;
-      if (serverResponded || cacheAge > 5000) {
+      const sensorArrayFresh = sensorArr.length === sensorCount;
+      const convergedToOptimistic = sensorCount === this._localPalettes.length;
+      if ((sensorArrayFresh && convergedToOptimistic) || cacheAge > 5000) {
         delete this._localPalettes;
         delete this._localPalettesTimestamp;
-        delete this._localPalettesBaseHash;
         this._lastPaletteHash = currHash;
         if (!this._deletionInProgress) {
           this.render();
         }
       }
+      // Otherwise keep displaying the optimistic list -- do not render the
+      // sensor data yet, it is still mid-update.
       return;
     }
 
@@ -237,10 +243,12 @@ class YeelightCubePaletteCard extends HTMLElement {
   /**
    * Render the palette card
    *
-   * STALE DATA PROTECTION:
-   * The palettes_v2 array from sensor attributes may be stale (HA websocket limitation).
-   * We MUST use the count attribute as the source of truth and trim the array accordingly.
-   * This ensures deleted items don't reappear even when HA doesn't send updated arrays.
+   * DATA SOURCE:
+   * Renders from the optimistic local cache (`_localPalettes`) while a deletion
+   * is being confirmed, otherwise straight from the sensor's authoritative
+   * `palettes_v2` array. The cache lifecycle (creation on delete, clearing once
+   * the sensor array has converged) is handled in the `hass` setter, so render()
+   * just trusts whichever source is current.
    */
   render() {
     const hass = this._hass;
@@ -1236,15 +1244,11 @@ class YeelightCubePaletteCard extends HTMLElement {
     // Remove from local state immediately
     const updatedPalettes = palettes.filter((_, i) => i !== idx);
 
-    // Store the updated palettes temporarily (ONLY during the deletion operation)
+    // Store the updated palettes temporarily (ONLY during the deletion operation).
+    // The hass setter keeps showing this correctly-filtered list until the
+    // sensor's authoritative array converges (see set hass()).
     this._localPalettes = updatedPalettes;
     this._localPalettesTimestamp = Date.now(); // Track when cache was created
-    // Snapshot the sensor's content_hash so the hass setter knows when the
-    // backend has actually applied the deletion (hash will change).
-    if (this._localPalettesBaseHash === undefined) {
-      this._localPalettesBaseHash =
-        stateObj?.attributes?.content_hash ?? `count:${palettes.length}`;
-    }
 
     // Force immediate re-render with the updated list
     this.render();
@@ -2105,14 +2109,18 @@ class YeelightCubePaletteCard extends HTMLElement {
     delete this._localPalettesTimestamp;
   }
 }
-customElements.define("yeelight-cube-palette-card", YeelightCubePaletteCard);
+if (!customElements.get("yeelight-cube-palette-card")) {
+  customElements.define("yeelight-cube-palette-card", YeelightCubePaletteCard);
+}
 
 if (typeof window !== "undefined") {
   window.customCards = window.customCards || [];
-  window.customCards.push({
-    type: "yeelight-cube-palette-card",
-    name: "Yeelight Palettes Card",
-    description: "View and manage palettes for the Yeelight Cube Lite.",
-    preview: true,
-  });
+  if (!window.customCards.some((c) => c.type === "yeelight-cube-palette-card")) {
+    window.customCards.push({
+      type: "yeelight-cube-palette-card",
+      name: "Yeelight Palettes Card",
+      description: "View and manage palettes for the Yeelight Cube Lite.",
+      preview: true,
+    });
+  }
 }

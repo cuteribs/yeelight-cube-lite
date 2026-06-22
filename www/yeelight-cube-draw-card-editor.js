@@ -1713,7 +1713,9 @@ class YeelightCubeDrawCardEditor extends LitElement {
   }
 }
 
-customElements.define(
-  "yeelight-cube-draw-card-editor",
-  YeelightCubeDrawCardEditor,
-);
+if (!customElements.get("yeelight-cube-draw-card-editor")) {
+  customElements.define(
+    "yeelight-cube-draw-card-editor",
+    YeelightCubeDrawCardEditor,
+  );
+}

@@ -110,10 +110,6 @@ function expandPixelArt(art) {
 
 const MAX_IMAGE_PALETTE_COLORS = 15;
 
-console.error(
-  `[YeelightDrawCard] module loaded at ${new Date().toISOString()}`,
-);
-
 class YeelightCubeDrawCard extends LitElement {
   static getStubConfig(hass) {
     const firstEntity =
@@ -3966,14 +3962,18 @@ class YeelightCubeDrawCard extends LitElement {
   }
 }
 
-customElements.define("yeelight-cube-draw-card", YeelightCubeDrawCard);
+if (!customElements.get("yeelight-cube-draw-card")) {
+  customElements.define("yeelight-cube-draw-card", YeelightCubeDrawCard);
+}
 
 // Register with Home Assistant's card picker
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "yeelight-cube-draw-card",
-  name: "Yeelight Draw Card",
-  description:
-    "Draw pixel art and control your Yeelight Cube Lite matrix display.",
-  preview: true,
-});
+if (!window.customCards.some((c) => c.type === "yeelight-cube-draw-card")) {
+  window.customCards.push({
+    type: "yeelight-cube-draw-card",
+    name: "Yeelight Draw Card",
+    description:
+      "Draw pixel art and control your Yeelight Cube Lite matrix display.",
+    preview: true,
+  });
+}

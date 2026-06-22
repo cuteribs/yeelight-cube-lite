@@ -4959,16 +4959,22 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
   }
 }
 
-customElements.define(
-  "yeelight-cube-lamp-preview-card",
-  YeelightCubeLampPreviewCard,
-);
+if (!customElements.get("yeelight-cube-lamp-preview-card")) {
+  customElements.define(
+    "yeelight-cube-lamp-preview-card",
+    YeelightCubeLampPreviewCard,
+  );
+}
 
 // Register for Lovelace "Add Card" UI
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "yeelight-cube-lamp-preview-card",
-  name: "Yeelight Preview Card",
-  description: "Preview the Yeelight Cube Lite lamp matrix and settings.",
-  preview: true,
-});
+if (
+  !window.customCards.some((c) => c.type === "yeelight-cube-lamp-preview-card")
+) {
+  window.customCards.push({
+    type: "yeelight-cube-lamp-preview-card",
+    name: "Yeelight Preview Card",
+    description: "Preview the Yeelight Cube Lite lamp matrix and settings.",
+    preview: true,
+  });
+}
