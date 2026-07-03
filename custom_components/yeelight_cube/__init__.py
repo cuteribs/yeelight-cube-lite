@@ -136,15 +136,26 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     # fail), the fetch errors out with no cached fallback, so the cards fail to
     # load until a manual reload once the backend is warm.
     #
-    # Fix: use `max-age=0, must-revalidate, stale-while-revalidate`.  The
-    # browser serves the cached copy immediately (no blocking network request,
-    # so a transient backend 502 no longer breaks the cards) and revalidates in
-    # the background, picking up a new deploy on the next load.  `stale-if-error`
-    # is added as a belt-and-suspenders hint for any intermediary proxy/CDN to
-    # serve the last good copy when the origin returns a 5xx.
+    # Fix: `max-age=0, stale-while-revalidate=86400, stale-if-error=86400`.
+    # - max-age=0            -> always treat the cached copy as stale, so a new
+    #                           deploy is always revalidated (no stale JS).
+    # - stale-while-revalidate-> serve the cached copy immediately and revalidate
+    #                           in the BACKGROUND (non-blocking), so a transient
+    #                           backend 502 during load no longer breaks a card
+    #                           that was cached on a previous visit.
+    # - stale-if-error       -> if revalidation returns a 5xx / network error,
+    #                           keep serving the last good copy.
+    # NOTE: `must-revalidate` is intentionally NOT used -- it forbids serving a
+    # stale copy on a failed revalidation, which directly contradicts (and can
+    # override) stale-while-revalidate / stale-if-error.
+    #
+    # Honest limitations: this only helps assets that were cached on a PREVIOUS
+    # load.  A truly first-ever load (empty cache) during a backend outage still
+    # fails, and it cannot fix HA's own frontend_latest/*.js 502s -- those are
+    # served by HA core, not by us.  The real cure for the cold-load 502s is on
+    # the reverse-proxy / tunnel side.
     _CACHE_CONTROL = (
-        "max-age=0, must-revalidate, "
-        "stale-while-revalidate=86400, stale-if-error=86400"
+        "max-age=0, stale-while-revalidate=86400, stale-if-error=86400"
     )
     www_path = os.path.join(os.path.dirname(__file__), "www")
     if os.path.isdir(www_path):
@@ -192,7 +203,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             )
             registered = True
             _LOGGER.debug(
-                "Yeelight Cube Lite: Serving frontend assets at %s with no-cache headers",
+                "Yeelight Cube Lite: Serving frontend assets at %s with "
+                "stale-while-revalidate cache headers",
                 FRONTEND_URL_BASE,
             )
         except Exception:
