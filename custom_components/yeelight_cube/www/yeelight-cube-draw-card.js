@@ -71,7 +71,7 @@ import {
   EVT_ACTION_VISIBILITY_RESET,
 } from "./draw_card_const.js";
 import { StorageUtils } from "./draw_card_storage.js";
-import { callServiceOnTargetEntities as callServiceSequentially } from "./service-call-utils.js?v=2";
+import { callServiceOnTargetEntities as callServiceSequentially } from "./service-call-utils.js";
 
 /**
  * Expand a pixel art's pixels array to flat [{position, color}] format.
@@ -1995,15 +1995,6 @@ class YeelightCubeDrawCard extends LitElement {
         pixels.push({ position: lampIdx, color: rgb });
       }
     }
-    const debugPayload = {
-      service: "yeelight_cube.apply_custom_pixels",
-      data: { entity_id: this.entity, pixels },
-    };
-    window.__YEELIGHT_DRAW_DEBUG_LAST_PAYLOAD = debugPayload;
-    // console.error(
-    //   "[YeelightDrawCard] _sendToLamp → apply_custom_pixels payload",
-    //   debugPayload,
-    // );
     await this.callServiceOnTargetEntities("apply_custom_pixels", {
       pixels,
     });

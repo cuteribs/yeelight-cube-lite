@@ -55,13 +55,6 @@ export async function callServiceOnTargetEntities(
   };
 
   try {
-    window.__YEELIGHT_DRAW_DEBUG_LAST_SERVICE_CALL = {
-      domain: "yeelight_cube",
-      service: serviceName,
-      data: payload,
-      callerTag,
-      timestamp: new Date().toISOString(),
-    };
     console.log(
       `[${callerTag}] Dispatching yeelight_cube.${serviceName}`,
       payload,

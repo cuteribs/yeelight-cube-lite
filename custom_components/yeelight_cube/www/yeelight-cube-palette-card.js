@@ -24,7 +24,7 @@ import {
 } from "./carousel-utils.js";
 import { gridModeStyles, renderGridMode } from "./grid-mode-utils.js";
 import { galleryModeStyles, renderGalleryMode } from "./gallery-mode-utils.js";
-import { callServiceOnTargetEntities as callServiceSequentially } from "./service-call-utils.js?v=2";
+import { callServiceOnTargetEntities as callServiceSequentially } from "./service-call-utils.js";
 import {
   paginationStyles,
   renderPagination,

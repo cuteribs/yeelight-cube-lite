@@ -11,7 +11,7 @@ import {
 } from "./delete-button-styles.js";
 import { compactModeStyles } from "./compact-mode-styles.js";
 import { compactLayoutStyles } from "./compact-layout-utils.js";
-import { callServiceOnTargetEntities as callServiceSequentially } from "./service-call-utils.js?v=2";
+import { callServiceOnTargetEntities as callServiceSequentially } from "./service-call-utils.js";
 import {
   ANGLE_UPDATE_DEBOUNCE_MS,
   rgbToHex as _sharedRgbToHex,

@@ -51,25 +51,37 @@ mimetypes.add_type("application/json", ".map")
 
 
 async def _async_register_lovelace_resources(
-    hass: HomeAssistant, card_files: list, url_base: str, version: str
-) -> None:
+    hass: HomeAssistant, card_files: list, url_base: str
+) -> bool:
     """Register card JS files as Lovelace dashboard resources.
 
-    This uses the same mechanism as HACS for registering frontend plugins,
-    ensuring cards load the same way as Mushroom, card-mod, and other
-    well-known custom cards (via the lovelace_resources storage collection).
+    Uses the same mechanism as HACS for registering frontend plugins, so the
+    cards load the same way as Mushroom, card-mod, and other HACS cards (via
+    the lovelace_resources storage collection).
+
+    Resources are registered WITHOUT a ?v= cache-busting query string.  Cache
+    freshness is handled entirely by the Cache-Control headers on the asset
+    route (see async_setup), which revalidate every file -- top-level cards and
+    their un-versioned internal imports alike -- on every load.  This keeps a
+    single, uniform caching strategy instead of a version query that only ever
+    covered the top-level card files and left their imports stale.
+
+    Returns True if the resource collection was available and registration was
+    handled here; False if it was unavailable (the caller should then fall back
+    to add_extra_js_url).
     """
     try:
         # The Lovelace resource collection is stored here by HA core
         resource_collection = hass.data.get("lovelace_resources")
         if resource_collection is None:
             _LOGGER.debug(
-                "Lovelace resources collection not available yet – "
-                "cards may need to be added manually or will load via add_extra_js_url"
+                "Lovelace resources collection not available yet -- "
+                "falling back to add_extra_js_url"
             )
-            return
+            return False
 
-        # Build a lookup of existing resources by their base URL (without query params)
+        # Build a lookup of existing resources by their base URL (ignoring any
+        # query string) so we can migrate older entries that still carry a ?v=.
         existing_items = resource_collection.async_items()
         existing_by_base = {}
         for item in existing_items:
@@ -77,13 +89,13 @@ async def _async_register_lovelace_resources(
             existing_by_base[base] = item
 
         for card_file in card_files:
-            card_url_base = f"{url_base}/{card_file}"
-            card_url = f"{card_url_base}?v={version}"
+            card_url = f"{url_base}/{card_file}"
 
-            if card_url_base in existing_by_base:
-                existing = existing_by_base[card_url_base]
+            if card_url in existing_by_base:
+                existing = existing_by_base[card_url]
                 if existing["url"] != card_url:
-                    # Version changed – update the URL to bust cache
+                    # Migrate an older ?v=-suffixed URL to the plain form so the
+                    # single Cache-Control strategy applies uniformly.
                     await resource_collection.async_update_item(
                         existing["id"], {"url": card_url}
                     )
@@ -94,13 +106,15 @@ async def _async_register_lovelace_resources(
                     {"url": card_url, "res_type": "module"}
                 )
                 _LOGGER.debug("Added Lovelace resource: %s", card_url)
+        return True
 
     except Exception:
         _LOGGER.warning(
             "Could not register Lovelace resources automatically. "
-            "You may need to add them manually: Settings → Dashboards → Resources",
+            "You may need to add them manually: Settings -> Dashboards -> Resources",
             exc_info=True,
         )
+        return False
 
 
 def _is_cubelite_model(model: str) -> bool:
@@ -446,15 +460,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Initialize conflict prevention and services (only once)
         get_conflict_prevention(hass)
         async_setup_services(hass)
-        
-        # Read version from manifest.json for cache-busting query params
-        try:
-            import json as _json
-            _manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
-            with open(_manifest_path, encoding="utf-8") as _mf:
-                _version = _json.load(_mf).get("version", "0")
-        except Exception:
-            _version = "0"
 
         # Register cards as Lovelace resources (same mechanism as HACS plugins).
         # This is more reliable than add_extra_js_url because HA loads these
@@ -469,19 +474,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             cf for cf in FRONTEND_CARD_FILES
             if os.path.isfile(os.path.join(_www_dir, cf))
         ]
-        await _async_register_lovelace_resources(
-            hass, _available_card_files, FRONTEND_URL_BASE, _version
+        _resources_registered = await _async_register_lovelace_resources(
+            hass, _available_card_files, FRONTEND_URL_BASE
         )
 
-        # Also register via add_extra_js_url as a fallback
-        try:
-            from homeassistant.components.frontend import add_extra_js_url  # type: ignore
-            for card_file in _available_card_files:
-                card_url = f"{FRONTEND_URL_BASE}/{card_file}?v={_version}"
-                add_extra_js_url(hass, card_url)
-        except (ImportError, Exception):
-            pass
-        
+        # Fallback ONLY when the Lovelace resource collection was unavailable
+        # (e.g. a YAML-mode dashboard).  add_extra_js_url injects the script
+        # into every HA frontend page, so when the resource registration above
+        # already handled things we skip it to avoid a redundant double-load.
+        if not _resources_registered:
+            try:
+                from homeassistant.components.frontend import add_extra_js_url  # type: ignore
+                for card_file in _available_card_files:
+                    add_extra_js_url(hass, f"{FRONTEND_URL_BASE}/{card_file}")
+            except (ImportError, Exception):
+                pass
+
         _LOGGER.debug("Yeelight Cube Lite: Storage, conflict prevention, and services initialized")
     
     # Register this device as managed by our component (for all entries)

@@ -10,7 +10,7 @@ import {
   exportImportButtonStyles,
   getExportImportButtonClass,
   renderButtonContent,
-} from "./export-import-button-utils.js?v=4";
+} from "./export-import-button-utils.js";
 import {
   renderCapsuleHTML,
   getCapsuleCSS,
@@ -334,9 +334,6 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       ? hass.states[this.config.entity]?.state
       : null;
     const stateChanged = oldState !== newState;
-
-    // TEMPORARY DEBUG: Log state changes
-    // (removed for performance)
 
     if (newState) {
       this._lastKnownState = newState;
