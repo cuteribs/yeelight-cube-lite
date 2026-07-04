@@ -2551,7 +2551,23 @@ class YeelightCubeDrawCard extends LitElement {
           albumConfig,
           "pixelarts",
         )}
-        
+
+        /* Album card size — driven by the "gallery preview size" slider.
+         * getAlbumStyles() (shared module) already scales the width, but this
+         * rule is emitted from the draw card's own (always-fresh) style block so
+         * the slider takes effect immediately and independently of the shared
+         * module's cache state. Width scales from the 240px baseline (100%),
+         * clamped 30–200%; margin-left is half the width to keep the card
+         * centred in the coverflow. */
+        .pixelarts-album-item {
+          width: ${Math.round(
+            (240 * Math.max(30, Math.min(200, previewSizePercent))) / 100,
+          )}px !important;
+          margin-left: -${Math.round(
+            (120 * Math.max(30, Math.min(200, previewSizePercent))) / 100,
+          )}px !important;
+        }
+
         /* Pixelart-specific album styles */
         .pixelarts-album-item .album-content-container {
           width: 100%;
