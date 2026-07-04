@@ -2956,13 +2956,23 @@ class YeelightCubeGradientCard extends HTMLElement {
     const unsub = this._hass.connection.subscribeEvents((event) => {
       // Guard: ignore events if card has been disconnected
       if (!this.isConnected) return;
-      // Generate hash of response to deduplicate
+      // Generate hash of response to deduplicate.
+      // IMPORTANT: include the actual `previews` payload (the per-mode colour
+      // matrices) in the key.  The previews are what the section renders, so
+      // hashing them is the only key that reliably detects a change.  A hash
+      // built from metadata alone (entity/text/angle/brightness/full_panel)
+      // MISSES colour-only changes: loading a new palette keeps the same text,
+      // angle, brightness and panel mode, so the metadata hash is identical and
+      // the fresh (correctly-recoloured) previews were discarded as a
+      // "duplicate" -- leaving the preview stale until an angle change altered
+      // the metadata.  Hashing the previews content fixes that uniformly.
       const responseHash = JSON.stringify({
         entity: event.data.entity_id,
         text: event.data.text,
         angle: Math.round(event.data.angle * 10) / 10,
         brightness: event.data.brightness,
         full_panel: event.data.full_panel,
+        previews: event.data.previews,
       });
 
       const cache = window._yeelightPreviewCache;
