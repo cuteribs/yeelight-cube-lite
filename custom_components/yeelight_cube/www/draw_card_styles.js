@@ -2181,46 +2181,34 @@ export const drawCardStyles = css`
     transform: scale(1.05);
   }
 
-  /* List mode overlay cross (top-right of preview) - Simple */
+  /* List mode overlay cross (top-right of preview).
+   * Size, shape and the centered × cross are owned entirely by the shared
+   * .delete-btn-cross base (delete-button-styles.js); this rule only nudges the
+   * corner position.  Do NOT set width/height/font-size here — earlier versions
+   * used calc() that multiplied px by a percentage (invalid CSS), which the
+   * browser dropped, collapsing the button to 0px and throwing the absolutely
+   * positioned cross into the corner. */
   .pixelart-preview .pixelart-delete-overlay-list {
     position: absolute !important;
-    top: calc(6px + var(--preview-size-percent, 100%) * 0.04px) !important;
-    right: calc(6px + var(--preview-size-percent, 100%) * 0.04px) !important;
+    top: 6px !important;
+    right: 6px !important;
     z-index: 10;
-    width: calc(20px + var(--preview-size-percent, 100%) * 0.08px) !important;
-    height: calc(20px + var(--preview-size-percent, 100%) * 0.08px) !important;
-    padding: 0 !important;
     transition: all 0.2s ease;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-  }
-
-  /* Override red-style for list mode */
-  .pixelart-preview .pixelart-delete-overlay-list.red-style::before,
-  .pixelart-preview .pixelart-delete-overlay-list.red-style::after {
-    width: calc(12px + var(--preview-size-percent, 100%) * 0.04px) !important;
   }
 
   .pixelart-preview .pixelart-delete-overlay-list:hover {
     transform: scale(1.1);
   }
 
-  /* Grid mode overlay cross (top-right of preview when no title) */
+  /* Grid mode overlay cross (top-right of preview when no title).
+   * As above: size/shape/cross come from the shared .delete-btn-cross base so
+   * the × stays perfectly centred in every position and size. */
   .pixelart-delete-overlay-grid {
     position: absolute;
-    top: calc(4px * var(--preview-size-percent, 100%) / 100);
-    right: calc(4px * var(--preview-size-percent, 100%) / 100);
+    top: 4px;
+    right: 4px;
     z-index: 10;
     background: var(--card-background-color, rgba(255, 255, 255, 0.9));
-    border-radius: 50%;
-    width: calc(24px * var(--preview-size-percent, 100%) / 100);
-    height: calc(24px * var(--preview-size-percent, 100%) / 100);
-    padding: 0;
-    font-size: calc(1em * var(--preview-size-percent, 100%) / 100);
-    display: flex;
-    align-items: center;
-    justify-content: center;
     transition: all 0.2s ease;
   }
 

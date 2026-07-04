@@ -163,6 +163,13 @@ export const deleteButtonStyles = `
     position: absolute;
     width: 28px;
     height: 28px;
+    /* Safety floor: even if a card's own CSS accidentally sets an invalid or
+     * auto width/height (e.g. a broken calc()), the button can never collapse
+     * to 0 and throw the absolutely-positioned × cross into the corner.  The
+     * floor matches the smallest variant (dot = 14px), so it never enlarges an
+     * intentionally small button. */
+    min-width: 14px;
+    min-height: 14px;
     display: flex !important;
     align-items: center;
     justify-content: center;

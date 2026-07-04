@@ -371,7 +371,8 @@ class YeelightCubePaletteCard extends HTMLElement {
       palettes.length > 0
     ) {
       const fresh = document.createElement("div");
-      fresh.className = "card-content" + (showItemBorder ? " item-card-border" : "");
+      fresh.className =
+        "card-content" + (showItemBorder ? " item-card-border" : "");
       fresh.innerHTML = contentHtml;
       existingContent.replaceWith(fresh);
       this.addEventListeners(palettes, allowTitleEdit, showCard);
