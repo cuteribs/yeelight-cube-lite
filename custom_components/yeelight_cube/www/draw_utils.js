@@ -35,15 +35,6 @@ export function resolveBgColor(bg, fallback = "transparent") {
   return map[bg] ?? fallback;
 }
 
-// --- Stale array trimming ---
-// Trims an array to `expectedCount` if it's longer (HA websocket staleness fix).
-export function trimStaleArray(arr, expectedCount) {
-  if (arr.length > expectedCount) {
-    return arr.slice(0, expectedCount);
-  }
-  return arr;
-}
-
 export function updateRecentColors(recentColors, newColor) {
   const normColor =
     typeof newColor === "string" ? newColor.toLowerCase() : newColor;

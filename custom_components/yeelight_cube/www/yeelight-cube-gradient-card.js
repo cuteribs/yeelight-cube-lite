@@ -506,7 +506,7 @@ class YeelightCubeGradientCard extends HTMLElement {
     }
 
     // Track entity state changes to auto-reload gallery previews (debounced)
-    // Only reload if text, angle, colors, or full_panel changed
+    // Only reload if text, angle, colors, matrix output, or full_panel changed
     const entityId = this._getPrimaryEntity();
     if (hass && entityId) {
       const stateObj = hass.states[entityId];
@@ -515,15 +515,25 @@ class YeelightCubeGradientCard extends HTMLElement {
       const currentColors = stateObj?.attributes?.text_colors;
       const currentPanelMode = stateObj?.attributes?.full_panel || false;
       const colorsHash = currentColors ? JSON.stringify(currentColors) : null;
+      // Also watch matrix_colors: in "Panel Color Sequence" mode the palette
+      // paints the panel directly, so the rendered output (matrix_colors) can
+      // change without text_colors differing.  Watching it here keeps the
+      // preview in sync with the actual lamp output in every mode.
+      const currentMatrixColors = stateObj?.attributes?.matrix_colors;
+      const matrixColorsHash = currentMatrixColors
+        ? JSON.stringify(currentMatrixColors)
+        : null;
       if (
         this._lastPreviewText !== currentText ||
         this._lastPreviewAngle !== currentAngle ||
         this._lastPreviewColors !== colorsHash ||
+        this._lastPreviewMatrixColors !== matrixColorsHash ||
         this._lastPreviewPanelMode !== currentPanelMode
       ) {
         this._lastPreviewText = currentText;
         this._lastPreviewAngle = currentAngle;
         this._lastPreviewColors = colorsHash;
+        this._lastPreviewMatrixColors = matrixColorsHash;
         this._lastPreviewPanelMode = currentPanelMode;
         // Debounce preview reload to avoid flickering on rapid updates
         // (gallery thumbnails still use the preview cache)
