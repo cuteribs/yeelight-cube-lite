@@ -41,6 +41,7 @@ class YeelightCubePaletteCard extends HTMLElement {
     this._stylesInjected = false; // Track if styles are already injected
     this._deletionInProgress = false; // Prevent re-render during deletion
     this._currentPalettePage = 0; // Pagination state
+    this._paletteShellKey = null; // Surgical-update shell signature (see render)
   }
 
   _renderPaletteColors(colors, style = "square", idx) {
@@ -340,6 +341,42 @@ class YeelightCubePaletteCard extends HTMLElement {
       showExport,
       showImport,
     );
+
+    // ── Surgical update fast-path ───────────────────────────────────────────
+    // Rebuilding the whole shadowRoot re-parses the large <style> block and
+    // recreates the <ha-card>, which causes a visible blink on every palette
+    // change.  When only the palette DATA changed (the shell — styles + card
+    // wrapper — is config-derived and therefore unchanged), swap ONLY the
+    // .card-content element instead.  This keeps the <style> and <ha-card>
+    // intact (no blink) while replacing the palette items.
+    //
+    // Safety:
+    // - shellKey captures the ENTIRE config plus the theme's dark-mode flag, so
+    //   ANY config/style/theme change misses the fast-path and does a full
+    //   rebuild — no risk of showing stale styling.
+    // - Only applies in card mode (ha-card > .card-content); the non-card
+    //   variant binds its delegated click listener to the shadowRoot, which
+    //   persists, so replacing content there would duplicate listeners.  The
+    //   `ha-card > .card-content` selector naturally excludes that case.
+    // - A fresh .card-content element is created and swapped in, so the old
+    //   element (and its delegated listeners) is discarded — addEventListeners
+    //   then binds cleanly to the new element with no duplication.
+    const shellKey = JSON.stringify(this.config) + "::dark=" + isDark;
+    const existingContent = this.shadowRoot.querySelector(
+      "ha-card > .card-content",
+    );
+    if (
+      existingContent &&
+      this._paletteShellKey === shellKey &&
+      palettes.length > 0
+    ) {
+      const fresh = document.createElement("div");
+      fresh.className = "card-content" + (showItemBorder ? " item-card-border" : "");
+      fresh.innerHTML = contentHtml;
+      existingContent.replaceWith(fresh);
+      this.addEventListeners(palettes, allowTitleEdit, showCard);
+      return;
+    }
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -1042,6 +1079,9 @@ class YeelightCubePaletteCard extends HTMLElement {
           : `${cardTitle ? `<div id="card-title" style="font-weight:600;font-size:1.1em;margin-bottom:8px;padding:16px 16px 0;">${cardTitle}</div>` : ""}<div class="card-content${showItemBorder ? " item-card-border" : ""}">${contentHtml}</div>`
       }
     `;
+    // Remember the shell we just built so a subsequent data-only change can take
+    // the surgical fast-path above instead of rebuilding the whole shadowRoot.
+    this._paletteShellKey = shellKey;
 
     if (palettes.length > 0) {
       this.addEventListeners(palettes, allowTitleEdit, showCard);
@@ -2103,6 +2143,10 @@ class YeelightCubePaletteCard extends HTMLElement {
     this._renderScheduled = false;
     this._deletionInProgress = false;
     this._importStatus = { active: false, success: false };
+    // Force a full rebuild on the next render after reconnect (the shadow DOM
+    // may be reused, but we don't want the surgical fast-path to assume the
+    // shell is still valid across a disconnect/reconnect cycle).
+    this._paletteShellKey = null;
 
     // Clear local palette cache
     delete this._localPalettes;
