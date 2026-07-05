@@ -1158,7 +1158,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             if self.hass is not None:
                 self.async_schedule_update_ha_state()
 
-
+    def _maybe_schedule_retry(self):
         """Schedule a display retry if the retry limit hasn't been reached.
         
         Thin wrapper that avoids log-spam: only logs 'stopping' ONCE when the
@@ -1868,12 +1868,12 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         """
         # Steps 1-3: Close persistent socket, activate FX via raw TCP, set brightness
         await self.ensure_fx_ready()
-        _LOGGER.warning(f"[FORCE REFRESH] [{self._ip}] ensure_fx_ready complete")
+        _LOGGER.info(f"[FORCE REFRESH] [{self._ip}] ensure_fx_ready complete")
         
         # Step 4: Re-render through the full display pipeline so brightness
         # darkening is applied once (not double-applied on stale pixel data).
         await self._apply_display_mode_internal(skip_post_delay=True)
-        _LOGGER.warning(
+        _LOGGER.info(
             f"[FORCE REFRESH] [{self._ip}] Complete - "
             f"FX mode active, brightness={self._last_hardware_brightness}%, "
             f"display re-rendered"
@@ -1881,7 +1881,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
 
     async def async_force_refresh(self):
         """Force refresh via _execute_hardware_op (properly serialized with device lock)."""
-        _LOGGER.warning(
+        _LOGGER.info(
             f"[FORCE REFRESH] [{self._ip}] Starting -- "
             f"closing persistent socket and using raw TCP"
         )
@@ -2075,7 +2075,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                 f"{old_brightness} -> {self._brightness}, darken={darken_percent}%"
             )
             if self.hass is not None:
-                _LOGGER.warning(
+                _LOGGER.debug(
                     f"[TIMING] [{self._ip}] brightness state_push epoch={time.time():.3f}")
                 self._notify_camera_preview()
                 self.async_schedule_update_ha_state()
@@ -4032,7 +4032,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                       if hasattr(m, 'data') and m.data and m.data[0] != '#000000')
             idle_since_last_cmd = time.time() - self._cube_matrix._last_command_time if self._cube_matrix._last_command_time > 0 else -1
             
-            _LOGGER.warning(
+            _LOGGER.debug(
                 f"[APPLY] [{self._ip}] Sending update_leds: "
                 f"{lit} lit / {100 - lit} dark pixels, "
                 f"text='{(self._custom_text or '')[:10]}' mode='{self._mode}' "
@@ -4043,7 +4043,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             _t_before_send = time.time()
             await self._cube_matrix.draw_matrices_fast(raw_rgb_data)
             _t_after_send = time.time()
-            _LOGGER.warning(
+            _LOGGER.debug(
                 f"[TIMING] [{self._ip}] TCP draw_matrices_fast: {(_t_after_send - _t_before_send)*1000:.1f}ms")
             
             # POST-SEND RECONNECTION CHECK: If the socket reconnected during
@@ -4095,7 +4095,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                 _t_after_cam = time.time()
                 self.async_schedule_update_ha_state()
                 _t_done = time.time()
-                _LOGGER.warning(
+                _LOGGER.debug(
                     f"[TIMING] [{self._ip}] apply pipeline: "
                     f"send={(_t_after_send - _t_before_send)*1000:.1f}ms "
                     f"post_delay={(_t_state_push - _t_after_send)*1000:.1f}ms "
@@ -4896,32 +4896,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         total = len(hass.data[DOMAIN]["pixel_arts"])
         _LOGGER.debug(f"[pixelart-backend] update_pixel_arts ({mode}): {len(valid_pixel_arts)} items provided, {total} total in collection.")
 
+    # Register the pixel-art websocket command ONCE at setup time.
+    # (This was previously nested inside handle_update_pixel_arts by mistake:
+    # the command only existed after that service was first called, and every
+    # subsequent call re-registered it.)
+    ws_schema_v2 = vol.Schema({vol.Optional("idx"): object}, extra=vol.ALLOW_EXTRA)
 
+    @websocket_api.websocket_command({
+        "type": "yeelight_cube/ws_get_pixel_art_v2",
+        "schema": ws_schema_v2,
+    })
+    @websocket_api.async_response
+    async def ws_get_pixel_art_v2(hass, connection, msg):
+        try:
+            idx = msg.get("idx")
+            pixel_arts = hass.data.get(DOMAIN, {}).get("pixel_arts", [])
+            if not (isinstance(idx, int) and 0 <= idx < len(pixel_arts)):
+                connection.send_error(msg["id"], "invalid_index", f"Invalid idx {idx}")
+                return
+            art = pixel_arts[idx]
+            if not (isinstance(art, dict) and "pixels" in art and isinstance(art["pixels"], list) and len(art["pixels"]) > 0):
+                connection.send_error(msg["id"], "no_pixels", f"No valid pixels for idx {idx}")
+                return
+            connection.send_result(msg["id"], {"name": art.get("name", "Unnamed"), "pixels": art.get("pixels", [])})
+        except Exception as e:
+            _LOGGER.error(f"[pixelart-debug] Exception in ws_get_pixel_art_v2: {e}")
 
-        # Register a new websocket command to avoid schema cache issues
-        ws_schema_v2 = vol.Schema({vol.Optional("idx"): object}, extra=vol.ALLOW_EXTRA)
-        @websocket_api.websocket_command({
-            "type": "yeelight_cube/ws_get_pixel_art_v2",
-            "schema": ws_schema_v2,
-        })
-        @websocket_api.async_response
-        async def ws_get_pixel_art_v2(hass, connection, msg):
-            _LOGGER = logging.getLogger(__name__)
-            try:
-                idx = msg.get("idx")
-                pixel_arts = hass.data.get(DOMAIN, {}).get("pixel_arts", [])
-                if not (isinstance(idx, int) and 0 <= idx < len(pixel_arts)):
-                    connection.send_error(msg["id"], "invalid_index", f"Invalid idx {idx}")
-                    return
-                art = pixel_arts[idx]
-                if not (isinstance(art, dict) and "pixels" in art and isinstance(art["pixels"], list) and len(art["pixels"]) > 0):
-                    connection.send_error(msg["id"], "no_pixels", f"No valid pixels for idx {idx}")
-                    return
-                connection.send_result(msg["id"], {"name": art.get("name", "Unnamed"), "pixels": art.get("pixels", [])})
-            except Exception as e:
-                _LOGGER.error(f"[pixelart-debug] Exception in ws_get_pixel_art_v2: {e}")
-
-        websocket_api.async_register_command(hass, ws_get_pixel_art_v2)
+    websocket_api.async_register_command(hass, ws_get_pixel_art_v2)
     
     # NOTE: Entity is already created and registered at the top of this function.
     # Do NOT create a second CubeMatrix/YeelightCubeLight here.
@@ -5717,8 +5718,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             return
 
         async def _apply_one(target_entity):
+            # Rendering reads colors from _text_colors, not _rgb_color — set
+            # both so the new color is actually visible on the lamp.
+            target_entity._text_colors = [rgb_color]
             target_entity._rgb_color = rgb_color
             await target_entity.async_apply_display_mode(update_type='color_change')
+            if target_entity.hass is not None:
+                target_entity.async_schedule_update_ha_state()
 
         _fire_and_forget(*[_apply_one(t) for t in targets])
 
@@ -5744,7 +5750,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             return
 
         async def _apply_one(target_entity):
-            _LOGGER.warning(
+            _LOGGER.debug(
                 f"[PANEL] [{getattr(target_entity, '_ip', '?')}] "
                 f"Setting full_panel={full_panel} (was {target_entity._full_panel})"
             )
@@ -5770,10 +5776,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             vol.Required("entity_id", description="Target lamp entity (e.g. light.cubelite_192_168_4_102)"): _entity_id_or_list,
         })
     )
-
-    async def handle_set_gradient_colors(service_call):
-        start_color = service_call.data.get("start_color")
-                # (Removed duplicate/old per-mode logic block; only new multi-stop gradient logic remains above)
 
     async def handle_remove_palette(service_call):
         try:
