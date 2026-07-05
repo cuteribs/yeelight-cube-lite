@@ -1,4 +1,5 @@
 import { rgbToCss } from "./yeelight-cube-dotmatrix.js";
+import { escapeHtml } from "./html-escape-utils.js";
 import { compactModeStyles } from "./compact-mode-styles.js";
 import {
   deleteButtonStyles,
@@ -1233,7 +1234,7 @@ class YeelightCubePaletteCard extends HTMLElement {
                 ? `<div class="palette-title" data-idx="${idx}" style="display:flex;align-items:center;justify-content:space-between;">
                     <span class="title-text${
                       allowTitleEdit ? " editable" : ""
-                    }">${palette.name || "Palette " + (idx + 1)}</span>
+                    }">${escapeHtml(palette.name) || "Palette " + (idx + 1)}</span>
                     ${
                       removeButtonCross
                         ? `<button class="remove-btn-cross" data-idx="${idx}" title="Remove" style="background:none;border:none;color:var(--error-color, #db4437);font-size:1.4em;cursor:pointer;position:absolute;top:8px;right:8px;">&#10006;</button>`
@@ -1708,7 +1709,7 @@ class YeelightCubePaletteCard extends HTMLElement {
                   }">
                     <span class="title-text${
                       allowTitleEdit ? " editable" : ""
-                    }">${palette.name || "Palette " + (idx + 1)}</span>
+                    }">${escapeHtml(palette.name) || "Palette " + (idx + 1)}</span>
                     ${
                       isGradientBg && showColorCount
                         ? `<span class="list-color-count">${colorCountText}</span>`
@@ -2074,7 +2075,7 @@ class YeelightCubePaletteCard extends HTMLElement {
           showPaletteTitle
             ? `
                 <div class="palette-title">
-                  ${palette.name || `Palette ${idx + 1}`}
+                  ${escapeHtml(palette.name) || `Palette ${idx + 1}`}
                 </div>
               `
             : ""

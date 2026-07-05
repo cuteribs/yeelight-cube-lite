@@ -7,6 +7,8 @@
  * and sideClass through the options bag.
  */
 
+import { escapeHtml } from "./html-escape-utils.js";
+
 export const galleryModeStyles = `
   /* Gallery Mode - Modern Gallery Layout */
   .gallery-grid {
@@ -257,7 +259,8 @@ export function renderGalleryMode(items, renderContent, options = {}) {
   const itemsHtml = items
     .map((item, localIdx) => {
       const idx = localIdx + globalOffset;
-      const title = item.name || item.title || `Item ${idx + 1}`;
+      // Escape user-controlled names to prevent stored XSS via innerHTML
+      const title = escapeHtml(item.name || item.title) || `Item ${idx + 1}`;
       const gradientStyle =
         isGradientBg && item.gradientBg
           ? `style="background: linear-gradient(to right, ${item.gradientBg});"`

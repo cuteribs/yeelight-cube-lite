@@ -7,6 +7,8 @@
  * and sideClass through the options bag.
  */
 
+import { escapeHtml } from "./html-escape-utils.js";
+
 /**
  * Renders items in list mode
  * @param {Array} items - Array of items to display
@@ -63,7 +65,7 @@ export function renderListMode(items, options) {
                   };">
                     <span class="title-text${
                       allowTitleEdit ? " editable" : ""
-                    }">${item.name || `Item ${idx + 1}`}</span>
+                    }">${escapeHtml(item.name) || `Item ${idx + 1}`}</span>
                   </div>`
                 : ""
             }

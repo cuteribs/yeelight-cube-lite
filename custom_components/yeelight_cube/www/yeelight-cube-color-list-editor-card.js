@@ -1,4 +1,5 @@
 ﻿import { rgbToCss } from "./yeelight-cube-dotmatrix.js";
+import { escapeHtml } from "./html-escape-utils.js";
 import {
   exportImportButtonStyles,
   getExportImportButtonClass,
@@ -21,8 +22,14 @@ import {
   generateShapeMask as _sharedGenerateShapeMask,
 } from "./angle-wheel-utils.js";
 
-// Global storage for pending colors per entity (shared across all card instances)
+// Global storage for pending (optimistic) colors per entity (shared across all
+// card instances).  Entries are { colors, ts }.  The cache only exists to
+// bridge the short gap until the backend echoes our own set_text_colors call
+// back; if it still disagrees with the backend after PENDING_COLORS_GRACE_MS
+// it is dropped (see `set hass`), so it can never permanently mask changes
+// made elsewhere (palette card, select entity, automations).
 const PENDING_COLORS_STORE = {};
+const PENDING_COLORS_GRACE_MS = 2000;
 
 class YeelightCubeColorListEditorCard extends HTMLElement {
   constructor() {
@@ -125,8 +132,30 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
       this._pendingServiceCalls = [];
     }
 
+    // PENDING-CACHE EXPIRY: if the optimistic cache is older than the
+    // expected service-echo window, drop it.  Without this, one failed or
+    // mismatched echo left the cache stale forever and the card ignored all
+    // external color changes (e.g. selecting a palette on another card).
+    let staleCacheCleared = false;
+    if (this.config) {
+      const entityId = this._getPrimaryEntity();
+      const entry = entityId ? PENDING_COLORS_STORE[entityId] : null;
+      if (entry && Date.now() - entry.ts > PENDING_COLORS_GRACE_MS) {
+        const backendColors =
+          hass.states?.[entityId]?.attributes?.text_colors || null;
+        delete PENDING_COLORS_STORE[entityId];
+        if (
+          backendColors &&
+          JSON.stringify(backendColors) !== JSON.stringify(entry.colors)
+        ) {
+          // Displayed colors were masking newer backend state — must render
+          staleCacheCleared = true;
+        }
+      }
+    }
+
     // Only render if our entity's state actually changed
-    if (oldHass && this.config) {
+    if (!staleCacheCleared && oldHass && this.config) {
       const entityId = this._getPrimaryEntity();
       if (entityId) {
         const oldState = oldHass.states[entityId];
@@ -269,18 +298,18 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
     const sensorColors = stateObj.attributes.text_colors || [[255, 255, 255]];
 
     // Use global pending colors store (shared across all card instances for this entity)
-    const pendingColors = PENDING_COLORS_STORE[entityId];
+    const pendingEntry = PENDING_COLORS_STORE[entityId];
 
     // Clear pending colors if sensor has caught up
     if (
-      pendingColors &&
-      JSON.stringify(pendingColors) === JSON.stringify(sensorColors)
+      pendingEntry &&
+      JSON.stringify(pendingEntry.colors) === JSON.stringify(sensorColors)
     ) {
       delete PENDING_COLORS_STORE[entityId];
     }
 
     // Use pending colors for instant feedback, fall back to sensor
-    let textColors = PENDING_COLORS_STORE[entityId] || sensorColors;
+    let textColors = PENDING_COLORS_STORE[entityId]?.colors || sensorColors;
 
     // Get current angle from entity
     const currentAngle = stateObj.attributes.angle ?? 0;
@@ -589,7 +618,7 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
     // Full render for initial load
     const cardContent = `
       <div style="padding:16px; box-sizing: border-box; max-width: 100%;">
-        ${!showCard && cardTitle ? `<div style="font-weight:600;font-size:1.1em;margin-bottom:8px;">${cardTitle}</div>` : ""}
+        ${!showCard && cardTitle ? `<div style="font-weight:600;font-size:1.1em;margin-bottom:8px;">${escapeHtml(cardTitle)}</div>` : ""}
         
         ${
           showColorSection
@@ -2102,7 +2131,7 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
       </style>
       ${
         showCard
-          ? `<ha-card${cardTitle ? ` header="${cardTitle}"` : ""}><div class="card-content">${cardContent}</div></ha-card>`
+          ? `<ha-card${cardTitle ? ` header="${escapeHtml(cardTitle)}"` : ""}><div class="card-content">${cardContent}</div></ha-card>`
           : `<div class="card-content">${cardContent}</div>`
       }
     `;
@@ -2139,7 +2168,7 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
       textColors = [[255, 255, 255]];
     } else {
       const stateObj = this._hass.states[entityId];
-      textColors = PENDING_COLORS_STORE[entityId] ||
+      textColors = PENDING_COLORS_STORE[entityId]?.colors ||
         (stateObj &&
           stateObj.attributes &&
           stateObj.attributes.text_colors) || [[255, 255, 255]];
@@ -2193,6 +2222,10 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
     ];
 
     modeSelectors.forEach((btn) => {
+      // Guard: addEventListeners() also runs on skipped-render passes where the
+      // DOM is NOT replaced — without this, each pass stacks another listener.
+      if (btn.hasAttribute("data-listener-attached")) return;
+      btn.setAttribute("data-listener-attached", "true");
       btn.addEventListener("click", async (e) => {
         const mode = e.target.dataset.mode;
         if (!this._hass || !this._getPrimaryEntity()) return;
@@ -2256,7 +2289,8 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
 
     // Runtime Controls - Dropdown selector
     const modeDropdown = root.querySelector(".mode-select");
-    if (modeDropdown) {
+    if (modeDropdown && !modeDropdown.hasAttribute("data-listener-attached")) {
+      modeDropdown.setAttribute("data-listener-attached", "true");
       modeDropdown.addEventListener("change", async (e) => {
         const mode = e.target.value;
         if (
@@ -2298,7 +2332,11 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
 
     // Runtime Controls - Apply to Whole Panel checkbox
     const panelCheckbox = root.getElementById("apply-to-panel");
-    if (panelCheckbox) {
+    if (
+      panelCheckbox &&
+      !panelCheckbox.hasAttribute("data-listener-attached")
+    ) {
+      panelCheckbox.setAttribute("data-listener-attached", "true");
       panelCheckbox.addEventListener("change", async (e) => {
         if (!this._hass) return;
 
@@ -4473,7 +4511,7 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
     const hass = this._hass;
 
     // Get the current colors from global pending state or entity state
-    const pendingColors = PENDING_COLORS_STORE[entityId];
+    const pendingColors = PENDING_COLORS_STORE[entityId]?.colors;
     if (pendingColors) {
       return pendingColors.slice(); // Return a copy
     }
@@ -4662,13 +4700,18 @@ class YeelightCubeColorListEditorCard extends HTMLElement {
 
     // Store old length to detect if array size changed
     const oldColors =
-      PENDING_COLORS_STORE[entityId] ||
+      PENDING_COLORS_STORE[entityId]?.colors ||
       this._hass?.states[entityId]?.attributes.text_colors ||
       [];
     const lengthChanged = oldColors.length !== textColors.length;
 
-    // Store pending colors in global store (shared across all card instances)
-    PENDING_COLORS_STORE[entityId] = textColors.slice();
+    // Store pending colors in global store (shared across all card instances).
+    // Timestamped so `set hass` can expire the entry if the backend echo
+    // never matches (see PENDING_COLORS_GRACE_MS).
+    PENDING_COLORS_STORE[entityId] = {
+      colors: textColors.slice(),
+      ts: Date.now(),
+    };
 
     // Render SYNCHRONOUSLY if length changed to prevent stale DOM issues
     // (e.g., rapid clicks on remove button need immediate DOM updates)

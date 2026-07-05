@@ -1,4 +1,5 @@
 import { renderDotMatrix, rgbToCss } from "./yeelight-cube-dotmatrix.js";
+import { escapeHtml } from "./html-escape-utils.js";
 import { getInitialMatrix } from "./draw_card_state.js";
 import {
   BLACK_THRESHOLD,
@@ -434,8 +435,14 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         entity_id: this.config.entity,
       });
 
-      // Safety timeout: clear loading after 5 seconds if state doesn't update
-      setTimeout(() => {
+      // Safety timeout: clear loading after 5 seconds if state doesn't update.
+      // Tracked + isConnected-guarded so a removed card can't touch the DOM.
+      if (this._powerToggleSafetyTimer) {
+        clearTimeout(this._powerToggleSafetyTimer);
+      }
+      this._powerToggleSafetyTimer = setTimeout(() => {
+        this._powerToggleSafetyTimer = null;
+        if (!this.isConnected) return;
         if (this._powerToggling) {
           console.warn("[POWER BUTTON] Timeout - clearing loading state");
           this._powerToggling = false;
@@ -1870,7 +1877,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           showCard
             ? `<ha-card${
                 cardTitle
-                  ? ` header="${cardTitle}${
+                  ? ` header="${escapeHtml(cardTitle)}${
                       usingFallbackMatrix ? " (No Matrix Data)" : ""
                     }"`
                   : ""
@@ -1887,7 +1894,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
                <div class="yeelight-cube-lamp-preview-container">
                  ${
                    cardTitle
-                     ? `<div style="font-weight:600;font-size:1.1em;margin-bottom:8px;">${cardTitle}</div>`
+                     ? `<div style="font-weight:600;font-size:1.1em;margin-bottom:8px;">${escapeHtml(cardTitle)}</div>`
                      : ""
                  }
                  ${matrixHtml}
@@ -4926,6 +4933,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     clearTimeout(this._renderDebounceTimer);
     clearTimeout(this._oscillationResetTimeout);
     clearTimeout(this._userBrightnessTimeout);
+    clearTimeout(this._powerToggleSafetyTimer);
 
     this._brightnessDebounceTimer = null;
     this._realBrightnessDebounceTimer = null;
@@ -4933,6 +4941,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     this._renderDebounceTimer = null;
     this._oscillationResetTimeout = null;
     this._userBrightnessTimeout = null;
+    this._powerToggleSafetyTimer = null;
 
     // Clean up document-level drag listeners if disconnected mid-drag
     if (this._dragCleanup) {

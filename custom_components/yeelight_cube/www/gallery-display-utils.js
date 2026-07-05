@@ -1,9 +1,24 @@
 import { BLACK_THRESHOLD } from "./draw_card_const.js";
+import { escapeHtml } from "./html-escape-utils.js";
 
 /**
  * Shared utility for rendering gallery/preview display modes
  * Used by draw card (pixel arts), gradient card (gradient previews), and color list card
  */
+
+/**
+ * Escape user-controlled item titles before they are interpolated into
+ * innerHTML strings (both as element content and title="..." attributes).
+ * Pixel-art / palette names are user data — without this, a name like
+ * `<img src=x onerror=...>` is stored XSS.
+ */
+function sanitizeItems(items) {
+  return (items || []).map((it) =>
+    it && typeof it === "object" && it.title !== undefined && it.title !== null
+      ? { ...it, title: escapeHtml(it.title) }
+      : it,
+  );
+}
 
 // ============================================================================
 // WHEEL MODE CONSTANTS - Configuration and styling
@@ -213,6 +228,7 @@ export function renderMatrixPreview(colorData, options = {}) {
  * @returns {string} HTML string
  */
 export function renderGalleryMode(items, options = {}) {
+  items = sanitizeItems(items);
   const {
     previewSize = 200,
     showCards = true,
@@ -314,6 +330,7 @@ export function renderGalleryMode(items, options = {}) {
  * @returns {string} HTML string
  */
 export function renderGridMode(items, options = {}) {
+  items = sanitizeItems(items);
   const {
     columns = 3,
     previewSize = 200,
@@ -417,6 +434,7 @@ export function renderGridMode(items, options = {}) {
  * @returns {string} HTML string
  */
 export function renderCompactMode(items, options = {}) {
+  items = sanitizeItems(items);
   const {
     previewSize = 200,
     showCards = true,
@@ -507,6 +525,7 @@ export function renderCompactMode(items, options = {}) {
  * @returns {string} HTML string
  */
 export function renderInlineMode(items, options = {}) {
+  items = sanitizeItems(items);
   const {
     columns = 2,
     previewSize = 200,
@@ -574,6 +593,7 @@ export function renderInlineMode(items, options = {}) {
  * @returns {string} HTML string for wheel picker
  */
 export function renderWheelMode(items, options = {}) {
+  items = sanitizeItems(items);
   const {
     wheelHeight = WHEEL_MODE.DEFAULT_WHEEL_HEIGHT,
     wheelDisplayStyle = "default",
