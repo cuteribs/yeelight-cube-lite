@@ -1,4 +1,16 @@
-"""Device registry integration for Yeelight Cube Lite."""
+"""Device registry integration for Yeelight Cube Lite.
+
+⚠️ DEAD CODE — DELETION CANDIDATE (identified in code review 2026-07)
+=====================================================================
+This module is NEVER imported anywhere in the component:
+- `async_get_device_manager()` has no callers.
+- Device registry entries are created via each entity's `device_info`
+  property instead (light.py, camera.py, select.py, ...).
+Note: `is_device_managed()` here also contains a latent bug (passes None
+as config_entry_id) that would crash if the module were ever used.
+It is kept only pending a final decision to remove it.  Do NOT add new
+imports of this module — delete it instead once confirmed unused.
+"""
 import logging
 from typing import Any, Dict
 from homeassistant.core import HomeAssistant, callback # type: ignore

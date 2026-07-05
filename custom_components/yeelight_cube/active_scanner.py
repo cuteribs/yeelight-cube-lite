@@ -1,4 +1,14 @@
-"""Active discovery scanner for Yeelight Cube Lite devices."""
+"""Active discovery scanner for Yeelight Cube Lite devices.
+
+⚠️ DEAD CODE — DELETION CANDIDATE (identified in code review 2026-07)
+=====================================================================
+This module is NEVER imported anywhere in the component:
+- `start_active_scanner()` has no callers.
+- Discovery is handled instead by the SSDP scan in __init__.py
+  (_async_ssdp_discover_cubelite) and the zeroconf config flow.
+It is kept only pending a final decision to remove it.  Do NOT add new
+imports of this module — delete it instead once confirmed unused.
+"""
 import asyncio
 import logging
 from typing import Set
