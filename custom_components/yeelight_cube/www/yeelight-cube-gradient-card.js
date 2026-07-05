@@ -68,13 +68,23 @@ const LS_GRADIENT_MODE_VISIBILITY = "yeelight-gradient-mode-visibility";
 const EVT_GRADIENT_MODE_VISIBILITY_RESET =
   "yeelight-gradient-mode-visibility-reset";
 
-// Global preview cache that survives card recreation
-if (!window._yeelightPreviewCache) {
-  window._yeelightPreviewCache = {
-    data: null,
-    timestamp: 0,
-    responseHash: null,
-  };
+// Global preview caches that survive card recreation.
+// Keyed by entity_id so multiple gradient cards for DIFFERENT lamps on the
+// same dashboard don't clobber each other's previews (a single shared slot
+// previously made each card render the other lamp's data).
+if (!window._yeelightPreviewCaches) {
+  window._yeelightPreviewCaches = {};
+}
+function getPreviewCache(entityId) {
+  const key = entityId || "_default";
+  if (!window._yeelightPreviewCaches[key]) {
+    window._yeelightPreviewCaches[key] = {
+      data: null,
+      timestamp: 0,
+      responseHash: null,
+    };
+  }
+  return window._yeelightPreviewCaches[key];
 }
 
 /** All gradient mode names, in display/iteration order. */
@@ -125,7 +135,7 @@ class YeelightCubeGradientCard extends HTMLElement {
       EVT_GRADIENT_MODE_VISIBILITY_RESET,
       this._onVisibilityReset,
     );
-    // All preview data is now stored in window._yeelightPreviewCache (see top of file)
+    // All preview data is now stored in window._yeelightPreviewCaches (see top of file)
     // This ensures preview data persists across card destruction/recreation.
   }
 
@@ -352,7 +362,7 @@ class YeelightCubeGradientCard extends HTMLElement {
         this._onVisibilityReset,
       );
     }
-    // NOTE: Do NOT clear window._yeelightPreviewCache here.
+    // NOTE: Do NOT clear window._yeelightPreviewCaches here.
     // The global cache is designed to survive card recreation (see top of file).
     // HA's card-mod and editor destroy/recreate the entire element on every
     // config change — clearing the cache here causes the new instance to render
@@ -386,6 +396,14 @@ class YeelightCubeGradientCard extends HTMLElement {
     if (this._anglePreviewReloadTimer) {
       clearTimeout(this._anglePreviewReloadTimer);
       this._anglePreviewReloadTimer = null;
+    }
+    if (this._previewSafetyTimer) {
+      clearTimeout(this._previewSafetyTimer);
+      this._previewSafetyTimer = null;
+    }
+    if (this._previewRetryTimer) {
+      clearTimeout(this._previewRetryTimer);
+      this._previewRetryTimer = null;
     }
 
     // Reset interaction flags and cleanup safety timer
@@ -1853,7 +1871,7 @@ class YeelightCubeGradientCard extends HTMLElement {
           this._setupPreviewEventListener();
         }
         // Only load previews if we don't have recent data in global cache
-        const cache = window._yeelightPreviewCache;
+        const cache = this._previewCache();
         const timeSinceLastRequest = Date.now() - cache.timestamp;
         const hasRecentData = cache.data && timeSinceLastRequest < 5000; // 5 seconds
 
@@ -1912,11 +1930,10 @@ class YeelightCubeGradientCard extends HTMLElement {
           this._cachedPreviewHtml = newPreviewHtml;
           // Sync the preview-data hash so _getCachedPreviewGrid won't
           // regenerate with stale values on the next call
-          this._lastPreviewDataHash = window._yeelightPreviewCache.data
+          this._lastPreviewDataHash = this._previewCache().data
             ? JSON.stringify({
-                text: window._yeelightPreviewCache.data.text,
-                angle:
-                  Math.round(window._yeelightPreviewCache.data.angle * 10) / 10,
+                text: this._previewCache().data.text,
+                angle: Math.round(this._previewCache().data.angle * 10) / 10,
                 bgColor: this.config.gallery_background_color,
                 pixelStyle: this.config.gallery_pixel_style,
                 pixelGap:
@@ -2422,7 +2439,7 @@ class YeelightCubeGradientCard extends HTMLElement {
    * This avoids destroying and re-creating the wheel structure
    */
   _updateWheelPreviews() {
-    const previewData = window._yeelightPreviewCache.data;
+    const previewData = this._previewCache().data;
     if (!previewData) {
       return;
     }
@@ -2744,7 +2761,7 @@ class YeelightCubeGradientCard extends HTMLElement {
   _getCachedPreviewGrid() {
     // Generate a hash of the preview data to detect changes
     // Round angle to avoid re-renders on tiny floating point changes
-    const previewData = window._yeelightPreviewCache.data;
+    const previewData = this._previewCache().data;
     // hasData: !!previewData,
     // displayMode: this.config.preview_display_mode,
     // });
@@ -2785,7 +2802,7 @@ class YeelightCubeGradientCard extends HTMLElement {
   }
 
   _renderPreviewGrid() {
-    const previewData = window._yeelightPreviewCache.data;
+    const previewData = this._previewCache().data;
     if (!previewData) {
       return ``; // Return empty instead of "Loading previews..." message
     }
@@ -2900,7 +2917,7 @@ class YeelightCubeGradientCard extends HTMLElement {
 
     try {
       // Track request time in global cache
-      window._yeelightPreviewCache.timestamp = Date.now();
+      this._previewCache().timestamp = Date.now();
 
       // Call the preview service
       await this._hass.callService("yeelight_cube", "preview_gradient_modes", {
@@ -2912,7 +2929,11 @@ class YeelightCubeGradientCard extends HTMLElement {
       // the cache should already be updated by the event handler.  However, on
       // some HA versions the WebSocket event delivery can be slightly delayed.
       // Schedule a deferred safety refresh to cover that edge case.
-      setTimeout(() => {
+      // Tracked + isConnected-guarded so a removed card can't keep rendering.
+      if (this._previewSafetyTimer) clearTimeout(this._previewSafetyTimer);
+      this._previewSafetyTimer = setTimeout(() => {
+        this._previewSafetyTimer = null;
+        if (!this.isConnected) return;
         this._updatePreviewSection();
 
         // Also refresh the matrix text preview.  When the HA editor is open
@@ -2945,7 +2966,13 @@ class YeelightCubeGradientCard extends HTMLElement {
         this._previewRetryCount = retryCount;
         if (retryCount <= 5) {
           const delay = Math.min(retryCount * 2000, 10000); // 2s, 4s, 6s, 8s, 10s
-          setTimeout(() => this._loadPreviews(), delay);
+          // Tracked + isConnected-guarded so a removed card stops retrying.
+          if (this._previewRetryTimer) clearTimeout(this._previewRetryTimer);
+          this._previewRetryTimer = setTimeout(() => {
+            this._previewRetryTimer = null;
+            if (!this.isConnected) return;
+            this._loadPreviews();
+          }, delay);
         } else {
           console.warn(
             "[Gradient Card] Preview load still failing after 5 retries. " +
@@ -2958,6 +2985,14 @@ class YeelightCubeGradientCard extends HTMLElement {
     }
   }
 
+  /**
+   * Per-entity preview cache slot for THIS card's primary entity.
+   * See getPreviewCache() at the top of the file.
+   */
+  _previewCache() {
+    return getPreviewCache(this._getPrimaryEntity());
+  }
+
   _setupPreviewEventListener() {
     if (this._previewEventListenerRegistered || !this._hass) return;
 
@@ -2966,6 +3001,11 @@ class YeelightCubeGradientCard extends HTMLElement {
     const unsub = this._hass.connection.subscribeEvents((event) => {
       // Guard: ignore events if card has been disconnected
       if (!this.isConnected) return;
+      // Guard: only handle events for THIS card's entity.  Preview responses
+      // for another lamp must neither overwrite our cache slot nor trigger a
+      // re-render of this card.
+      const eventEntityId = event.data.entity_id;
+      if (eventEntityId && eventEntityId !== this._getPrimaryEntity()) return;
       // Generate hash of response to deduplicate.
       // IMPORTANT: include the actual `previews` payload (the per-mode colour
       // matrices) in the key.  The previews are what the section renders, so
@@ -2985,7 +3025,7 @@ class YeelightCubeGradientCard extends HTMLElement {
         previews: event.data.previews,
       });
 
-      const cache = window._yeelightPreviewCache;
+      const cache = getPreviewCache(eventEntityId || this._getPrimaryEntity());
 
       // Ignore duplicate responses
       if (responseHash === cache.responseHash) {
@@ -3015,9 +3055,21 @@ class YeelightCubeGradientCard extends HTMLElement {
       }
     }, "yeelight_cube_gradient_preview_response");
 
-    // Store unsubscribe function for cleanup in disconnectedCallback
+    // Store unsubscribe function for cleanup in disconnectedCallback.
+    // RACE GUARD: subscribeEvents resolves asynchronously — if the card was
+    // disconnected (or the registration flag cleared) before it resolves,
+    // unsubscribe immediately instead of storing the fn on a dead instance,
+    // which leaked one subscription per editor open/close cycle.
     if (unsub && typeof unsub.then === "function") {
       unsub.then((fn) => {
+        if (!this.isConnected || !this._previewEventListenerRegistered) {
+          try {
+            fn();
+          } catch (e) {
+            /* connection may already be closed */
+          }
+          return;
+        }
         this._unsubscribePreviewEvents = fn;
       });
     } else if (typeof unsub === "function") {
@@ -3490,7 +3542,7 @@ class YeelightCubeGradientCard extends HTMLElement {
     // Invalidate the response deduplication hash so the next preview_gradient_modes
     // response is always accepted, even if the backend briefly returns data for the
     // same angle (e.g., during rapid adjustments).
-    window._yeelightPreviewCache.responseHash = null;
+    this._previewCache().responseHash = null;
 
     // Directly schedule a preview reload after the backend processes the angle
     // change.  The set hass() detection path is unreliable because the entity
@@ -5276,7 +5328,7 @@ ${(() => {
       return matrixColors;
     }
     // FALLBACK: preview cache (for when entity state doesn't have matrix_colors)
-    const cache = window._yeelightPreviewCache;
+    const cache = this._previewCache();
     const previewData = cache?.data;
     const currentMode = this._getCurrentMode();
     return previewData?.previews?.[currentMode] || null;
