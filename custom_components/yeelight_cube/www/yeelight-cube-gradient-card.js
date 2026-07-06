@@ -1,5 +1,4 @@
-﻿import { rgbToCss } from "./yeelight-cube-dotmatrix.js";
-import { BLACK_THRESHOLD } from "./draw_card_const.js";
+﻿import { BLACK_THRESHOLD } from "./draw_card_const.js";
 import {
   renderGalleryDisplay,
   renderMatrixPreview,
@@ -22,6 +21,11 @@ import {
   resolveCapsuleTheme,
   resolveCapsuleThickness,
 } from "./capsule-slider-utils.js";
+import {
+  renderCarouselString,
+  carouselStyles,
+  attachCarouselSwipe,
+} from "./carousel-utils.js";
 
 /**
  * Convert gallery_preview_size config value (%) to pixels.
@@ -99,6 +103,94 @@ const GRADIENT_MODES = [
   "Letter Vertical Gradient",
   "Text Color Sequence",
 ];
+
+// ── Unified mode selector ──────────────────────────────────────────────────
+// Historically the card had TWO ways to pick a gradient mode: a text-style
+// selector (buttons/pills/dropdown/…) AND a clickable preview gallery.  They
+// served the exact same purpose, so they are now ONE selector with a single
+// `mode_selector_style` config key covering every presentation:
+//   Text styles:    "filled" | "dropdown" | "chips"
+//   Preview styles: "preview-list" | "preview-grid" |
+//                   "preview-carousel" | "preview-wheel"
+// Preview styles render live mini-matrix previews of every mode (click to
+// apply); text styles are lightweight and skip ALL preview backend calls.
+// Two appearance axes apply across EVERY style (shared design language with
+// the other cards): `selector_shape` (square/rounded/round) and the size
+// slider (`gallery_preview_size`, scales previews AND text buttons).
+const TEXT_SELECTOR_STYLES = ["filled", "dropdown", "chips"];
+const PREVIEW_SELECTOR_STYLES = [
+  "preview-list",
+  "preview-grid",
+  "preview-carousel",
+  "preview-wheel",
+];
+// Legacy `preview_display_mode` values → unified style
+const LEGACY_PREVIEW_STYLE_MAP = {
+  inline: "preview-list",
+  grid: "preview-list",
+  gallery: "preview-list",
+  list: "preview-list",
+  compact: "preview-list",
+  wheel: "preview-wheel",
+};
+
+// Legacy text-selector styles (buttons / pills / compact / colorized) are all
+// merged into the single "filled" style.
+const LEGACY_TEXT_STYLE_MAP = {
+  buttons: "filled",
+  pills: "filled",
+  compact: "filled",
+  colorized: "filled",
+};
+
+/**
+ * Resolve the unified mode-selector style from a card config, migrating
+ * legacy configs transparently.
+ *
+ * Legacy configs (pre-unification) ALWAYS showed the preview section — there
+ * was no way to hide it — so they migrate to the matching preview style.
+ * The old text selector (color_mode_style) remains available by explicitly
+ * choosing a text style in the editor.
+ */
+function resolveModeSelectorStyle(cfg) {
+  if (!cfg) return "preview-list";
+  const explicit = cfg.mode_selector_style;
+  if (explicit && LEGACY_TEXT_STYLE_MAP[explicit]) {
+    return LEGACY_TEXT_STYLE_MAP[explicit];
+  }
+  if (
+    explicit &&
+    (TEXT_SELECTOR_STYLES.includes(explicit) ||
+      PREVIEW_SELECTOR_STYLES.includes(explicit))
+  ) {
+    return explicit;
+  }
+  return LEGACY_PREVIEW_STYLE_MAP[cfg.preview_display_mode] || "preview-list";
+}
+
+/**
+ * Shared appearance axis: selector shape (matches the shape language used by
+ * the other cards — pixel styles, delete buttons, rounded cards).
+ *   "square"  → 0 radius
+ *   "rounded" → subtle radius (default, current look)
+ *   "round"   → pill / fully rounded
+ */
+function resolveSelectorShape(cfg) {
+  const v = cfg?.selector_shape;
+  return v === "square" || v === "round" ? v : "rounded";
+}
+
+/**
+ * Shared appearance axis: size.  The same slider (gallery_preview_size)
+ * drives preview pixel size AND a text-button scale factor, so "Size" means
+ * one thing regardless of the chosen selector style.
+ * 50% = 1.0× text scale; clamped to a sane 0.8–1.4 range.
+ */
+function resolveSelectorTextScale(cfg) {
+  const v = Number(cfg?.gallery_preview_size) || 50;
+  const pct = v > 100 ? 50 : v; // legacy px values → neutral scale
+  return Math.max(0.8, Math.min(1.4, pct / 50));
+}
 
 class YeelightCubeGradientCard extends HTMLElement {
   constructor() {
@@ -333,6 +425,7 @@ class YeelightCubeGradientCard extends HTMLElement {
     // After reconnection, the wheel controller was destroyed in disconnectedCallback.
     // We must re-initialize it once the DOM is ready again.
     if (
+      this._isPreviewSelectorActive?.() &&
       this._getDisplayMode?.() === "wheel" &&
       !this._wheelNavigationController
     ) {
@@ -405,6 +498,14 @@ class YeelightCubeGradientCard extends HTMLElement {
       clearTimeout(this._previewRetryTimer);
       this._previewRetryTimer = null;
     }
+    if (this._optimisticModeTimeout) {
+      clearTimeout(this._optimisticModeTimeout);
+      this._optimisticModeTimeout = null;
+    }
+    if (this._carouselNavTimer) {
+      clearTimeout(this._carouselNavTimer);
+      this._carouselNavTimer = null;
+    }
 
     // Reset interaction flags and cleanup safety timer
     this._pendingHassRender = false;
@@ -420,9 +521,12 @@ class YeelightCubeGradientCard extends HTMLElement {
     // comparison fires as "changed", causing a wasteful teardown/rebuild cycle
     // that races with preview loading and leaves a no-op wheel controller.
 
-    // Structural changes require full preview element rebuild
+    // Structural changes require full preview element rebuild.
+    // Compare the RESOLVED selector styles so legacy-key changes and
+    // text↔preview switches are detected uniformly.
     const wheelStructureChanged = this.config
-      ? this.config.preview_display_mode !== config?.preview_display_mode ||
+      ? resolveModeSelectorStyle(this.config) !==
+          resolveModeSelectorStyle(config) ||
         this.config.wheel_nav_position !== config?.wheel_nav_position ||
         this.config.preview_show_titles !== config?.preview_show_titles
       : false;
@@ -441,6 +545,8 @@ class YeelightCubeGradientCard extends HTMLElement {
       }
       this._lastPreviewDataHash = null;
       this._cachedPreviewHtml = null;
+      // Re-anchor the carousel on the active mode after a style switch
+      this._carouselIndex = null;
       if (this._previewElement) {
         this._previewElement = null;
       }
@@ -488,17 +594,18 @@ class YeelightCubeGradientCard extends HTMLElement {
       type: "custom:yeelight-cube-gradient-card",
       entity: firstEntity,
       target_entities: allEntities.length > 0 ? allEntities : [],
-      show_color_mode_selector: true,
+      mode_selector_style: "preview-wheel",
+      selector_shape: "rounded",
+      show_mode_selector: true,
+      show_panel_toggle: true,
+      show_active_mode_label: false,
       rotary_unified_style: "rectangle",
       show_angle_section: true,
       angle_value_display: "none",
       show_angle_slider: false,
-      color_mode_style: "compact",
-      button_text_color: "white",
-      panel_toggle_style: "default",
+      panel_toggle_style: "minimal",
       rotary_size: "100",
       gallery_background_color: "transparent",
-      preview_display_mode: "wheel",
       wheel_nav_position: "sides",
       preview_show_titles: false,
       gallery_pixel_style: "circle",
@@ -524,9 +631,10 @@ class YeelightCubeGradientCard extends HTMLElement {
     }
 
     // Track entity state changes to auto-reload gallery previews (debounced)
-    // Only reload if text, angle, colors, matrix output, or full_panel changed
+    // Only relevant when a preview-style selector is shown — text selectors
+    // never call the preview service.
     const entityId = this._getPrimaryEntity();
-    if (hass && entityId) {
+    if (hass && entityId && this._isPreviewSelectorActive()) {
       const stateObj = hass.states[entityId];
       const currentText = stateObj?.attributes?.custom_text;
       const currentAngle = stateObj?.attributes?.angle;
@@ -626,6 +734,19 @@ class YeelightCubeGradientCard extends HTMLElement {
       const backendPanelMode = entity.attributes.full_panel || false;
       if (backendPanelMode === this._optimisticPanelMode) {
         this._optimisticPanelMode = undefined;
+      }
+    }
+
+    // --- Optimistic Mode: clear only when backend echoes the new mode ---
+    // (prevents the highlight snapping back to the old mode between service
+    // completion and the entity state echo — see _selectMode)
+    if (this._optimisticMode && entity) {
+      if (entity.attributes.mode === this._optimisticMode) {
+        this._optimisticMode = null;
+        if (this._optimisticModeTimeout) {
+          clearTimeout(this._optimisticModeTimeout);
+          this._optimisticModeTimeout = null;
+        }
       }
     }
 
@@ -788,6 +909,7 @@ class YeelightCubeGradientCard extends HTMLElement {
           ? "No entities configured"
           : `Primary entity (${String(primaryEntity)}) not found`;
       this.shadowRoot.innerHTML = `<ha-card><div style="padding: 16px;">${message}</div></ha-card>`;
+      this._skeletonKey = null; // force full rebuild when the entity recovers
       return;
     }
     let textColors = this._pendingColors ||
@@ -796,9 +918,42 @@ class YeelightCubeGradientCard extends HTMLElement {
     // Get current angle from entity
     const currentAngle = stateObj.attributes.angle ?? 0;
 
+    // ── SURGICAL RENDER FAST PATH ──────────────────────────────────────
+    // Rebuilding the whole shadow DOM on every entity update caused visible
+    // blinking: the ~2000-line <style> block re-parsed, the persistent
+    // preview element was detached/re-appended, and every control was
+    // recreated.  The skeleton is now built ONCE per structural configuration
+    // (config + text colors, which are baked into rotary/button gradients);
+    // afterwards every render() call only syncs dynamic values in place.
+    const structuralKey = JSON.stringify({
+      cfg: this.config,
+      colors: textColors,
+    });
+    if (
+      this._skeletonKey === structuralKey &&
+      this.shadowRoot.querySelector(".card-content")
+    ) {
+      this._syncDynamicUI(stateObj, currentAngle);
+      return;
+    }
+    this._skeletonKey = structuralKey;
+
     const showCard = this.config.show_card_background !== false;
-    const showColorModeSelector =
-      this.config.show_color_mode_selector !== false;
+    // Unified mode selector (replaces the old separate color-mode selector +
+    // always-on preview section — they served the same purpose).
+    const selectorStyle = this._getModeSelectorStyle();
+    const isPreviewSelector = PREVIEW_SELECTOR_STYLES.includes(selectorStyle);
+    const showModeSelector =
+      this.config.show_mode_selector !== undefined
+        ? this.config.show_mode_selector !== false
+        : true;
+    // Panel toggle is independent of the selector now.  Legacy fallback: it
+    // used to live inside the text selector block, so respect the old
+    // show_color_mode_selector=false as "hide panel toggle" for old configs.
+    const showPanelToggle =
+      this.config.show_panel_toggle !== undefined
+        ? this.config.show_panel_toggle !== false
+        : this.config.show_color_mode_selector !== false;
     const showAngleSection = this.config.show_angle_section !== false;
 
     // Individual angle control visibility
@@ -825,11 +980,9 @@ class YeelightCubeGradientCard extends HTMLElement {
         : FILL_PANEL_CHAR_TO_COLS[currentCustomText] || 0;
     const colorMode = currentMode;
 
-    // Get color mode selector style from config
-    const colorModeStyle = this.config.color_mode_style || "buttons";
-
-    // Get panel toggle style from config
-    const panelToggleStyle = this.config.panel_toggle_style || "default";
+    // Get panel toggle style + shape from config
+    const panelToggleStyle = this.config.panel_toggle_style || "minimal";
+    const panelToggleShape = this.config.panel_toggle_shape || "round";
 
     // Check if rotary should be in header
     const rotaryInHeader = this.config.rotary_in_header === true;
@@ -851,34 +1004,50 @@ class YeelightCubeGradientCard extends HTMLElement {
         }
         
         ${
-          showColorModeSelector
+          showModeSelector || showPanelToggle
             ? `
-        <!-- Runtime Controls -->
-        <div class="runtime-controls" style="margin-bottom: 16px;">
+        <!-- Runtime Controls: unified mode selector -->
+        <div class="runtime-controls" style="margin-bottom: 8px;">
           <div class="control-section">
-            ${this.generateColorModeSelector(
-              colorMode,
-              colorModeStyle,
-              textColors,
-              this._draggingRotary && this._pendingAngle !== undefined
-                ? this._pendingAngle
-                : currentAngle,
-            )}
-            ${this._renderPanelToggle(applyToWholePanel, panelToggleStyle)}
-            <div class="panel-toggle default" style="margin-top: 4px; display: none; align-items: center; gap: 8px;">
-              <label for="fill-panel-cols" style="white-space: nowrap;">Fill Panel Test:</label>
-              <select id="fill-panel-cols" style="flex: 1; padding: 4px;">
-                <option value="0" ${fillPanelCols === 0 ? "selected" : ""}>Off</option>
-                ${Array.from({ length: 20 }, (_, i) => i + 1)
-                  .map(
-                    (n) =>
-                      `<option value="${n}" ${fillPanelCols === n ? "selected" : ""}>${n} col${n > 1 ? "s" : ""} (${n * 5} px)</option>`,
+            ${
+              this.config.show_active_mode_label === true
+                ? `<div class="gc-active-mode-label" id="gc-active-mode-label" title="Currently active mode">
+                     <span class="gc-aml-dot"></span>
+                     <span class="gc-aml-text">${colorMode}</span>
+                   </div>`
+                : ""
+            }
+            ${
+              showModeSelector && !isPreviewSelector
+                ? this.generateColorModeSelector(
+                    colorMode,
+                    selectorStyle,
+                    textColors,
+                    this._draggingRotary && this._pendingAngle !== undefined
+                      ? this._pendingAngle
+                      : currentAngle,
                   )
-                  .join("")}
-              </select>
-            </div>
+                : ""
+            }
           </div>
         </div>
+        <div id="preview-anchor" style="display:none;"></div>
+        ${showPanelToggle ? `
+        <div class="panel-section-wrapper" style="margin-bottom: 16px;">
+          ${this._renderPanelToggle(applyToWholePanel, panelToggleStyle, panelToggleShape)}
+          <div class="panel-toggle default" style="margin-top: 4px; display: none; align-items: center; gap: 8px;">
+            <label for="fill-panel-cols" style="white-space: nowrap;">Fill Panel Test:</label>
+            <select id="fill-panel-cols" style="flex: 1; padding: 4px;">
+              <option value="0" ${fillPanelCols === 0 ? "selected" : ""}>Off</option>
+              ${Array.from({ length: 20 }, (_, i) => i + 1)
+                .map(
+                  (n) =>
+                    `<option value="${n}" ${fillPanelCols === n ? "selected" : ""}>${n} col${n > 1 ? "s" : ""} (${n * 5} px)</option>`,
+                )
+                .join("")}
+            </select>
+          </div>
+        </div>` : ""}
         `
             : ""
         }
@@ -887,7 +1056,7 @@ class YeelightCubeGradientCard extends HTMLElement {
           showAngleSection
             ? `
         <div class="angle-section ${
-          showColorModeSelector ? "" : "no-color-selector"
+          showModeSelector || showPanelToggle ? "" : "no-color-selector"
         }">
           <div class="angle-row">
             ${(() => {
@@ -1603,6 +1772,179 @@ class YeelightCubeGradientCard extends HTMLElement {
           opacity: 1;
         }
 
+        /* Tabs style — two-option sliding control: [Pixels] / [Panel] */
+        .panel-toggle.tabs {
+          position: relative;
+          display: flex;
+          gap: 0;
+          background: var(--secondary-background-color, #eef0f2);
+          border-radius: 10px;
+          padding: 3px;
+        }
+        .panel-toggle.tabs .tabs-thumb {
+          position: absolute;
+          top: 3px;
+          bottom: 3px;
+          left: 3px;
+          width: calc(50% - 3px);
+          background: var(--card-background-color, #fff);
+          border-radius: 8px;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+          transition: transform 0.22s ease;
+          pointer-events: none;
+        }
+        .panel-toggle.tabs[data-active="1"] .tabs-thumb {
+          transform: translateX(100%);
+        }
+        .panel-toggle.tabs[data-shape="round"] .tabs-thumb {
+          border-radius: 999px;
+        }
+        .panel-toggle.tabs[data-shape="square"] .tabs-thumb {
+          border-radius: 0;
+        }
+        .panel-toggle.tabs .tab-btn {
+          position: relative;
+          z-index: 1;
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding: 7px 10px;
+          border: none;
+          background: transparent;
+          border-radius: 8px;
+          cursor: pointer;
+          font-size: 0.82em;
+          font-weight: 500;
+          color: var(--secondary-text-color, #888);
+          transition: color 0.2s ease;
+          white-space: nowrap;
+        }
+        .panel-toggle.tabs[data-shape="round"] .tab-btn {
+          border-radius: 999px;
+        }
+        .panel-toggle.tabs[data-shape="square"] .tab-btn {
+          border-radius: 0;
+        }
+        .panel-toggle.tabs .tab-btn.active {
+          color: var(--primary-color, #0969da);
+        }
+
+        /* Chip style — single floating chip that toggles */
+        .panel-toggle.chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          padding: 6px 14px 6px 10px;
+          border: 1.5px solid var(--divider-color, #d0d7de);
+          border-radius: 20px;
+          cursor: pointer;
+          background: transparent;
+          color: var(--secondary-text-color, #6b7280);
+          font-size: 0.85em;
+          font-weight: 500;
+          transition: all 0.2s ease;
+          user-select: none;
+        }
+        .panel-toggle.chip[data-shape="square"] { border-radius: 0; }
+        .panel-toggle.chip[data-shape="rounded"] { border-radius: 8px; }
+        .panel-toggle.chip:hover {
+          border-color: var(--primary-color, #0969da);
+          color: var(--primary-color, #0969da);
+        }
+        .panel-toggle.chip.active {
+          background: var(--primary-color, #0969da);
+          border-color: var(--primary-color, #0969da);
+          color: var(--text-primary-color, #fff);
+        }
+        .panel-toggle.chip .chip-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 2px;
+          border: 1.5px solid currentColor;
+          flex-shrink: 0;
+          transition: all 0.2s;
+        }
+        .panel-toggle.chip.active .chip-dot {
+          background: currentColor;
+        }
+
+        /* Minimal style — shape-aware dot/check indicator + text toggle */
+        .panel-toggle.minimal {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          cursor: pointer;
+          user-select: none;
+          padding: 4px 0;
+        }
+        .panel-toggle.minimal .minimal-indicator {
+          width: 16px;
+          height: 16px;
+          border-radius: 50%;
+          border: 2px solid var(--disabled-text-color, #ccc);
+          flex-shrink: 0;
+          transition: all 0.2s;
+          position: relative;
+          box-sizing: border-box;
+        }
+        /* shape variants for the indicator */
+        .panel-toggle.minimal[data-shape="rounded"] .minimal-indicator { border-radius: 4px; }
+        .panel-toggle.minimal[data-shape="square"] .minimal-indicator { border-radius: 0; }
+        .panel-toggle.minimal.active .minimal-indicator {
+          border-color: var(--primary-color, #0969da);
+          background: var(--primary-color, #0969da);
+        }
+        /* round (radio-dot) inner mark */
+        .panel-toggle.minimal.active:not([data-shape]) .minimal-indicator::after,
+        .panel-toggle.minimal.active[data-shape="round"] .minimal-indicator::after {
+          content: "";
+          position: absolute;
+          top: 3px; left: 3px;
+          width: 6px; height: 6px;
+          border-radius: 50%;
+          background: var(--text-primary-color, #fff);
+        }
+        /* square (checkbox) inner check */
+        .panel-toggle.minimal.active[data-shape="square"] .minimal-indicator::after {
+          content: "✓";
+          position: absolute;
+          top: -2px; left: 1px;
+          font-size: 12px;
+          font-weight: 700;
+          color: var(--text-primary-color, #fff);
+          line-height: 1;
+        }
+        .panel-toggle.minimal .minimal-text {
+          font-size: 0.85em;
+          font-weight: 500;
+          color: var(--secondary-text-color, #888);
+          transition: color 0.2s;
+        }
+        .panel-toggle.minimal.active .minimal-text {
+          color: var(--primary-color, #0969da);
+          font-weight: 600;
+        }
+        .panel-toggle.minimal:hover .minimal-text {
+          color: var(--primary-color, #0969da);
+        }
+        .panel-toggle.minimal:hover .minimal-indicator {
+          border-color: var(--primary-color, #0969da);
+        }
+
+        /* Switch shape variants */
+        .panel-toggle.switch[data-shape="square"] .switch-slider { border-radius: 0; }
+        .panel-toggle.switch[data-shape="square"] .switch-slider:before { border-radius: 0; }
+        .panel-toggle.switch[data-shape="rounded"] .switch-slider { border-radius: 6px; }
+        .panel-toggle.switch[data-shape="rounded"] .switch-slider:before { border-radius: 3px; }
+
+        /* Card shape variants */
+        .panel-toggle.card[data-shape="square"] { border-radius: 0; }
+        .panel-toggle.card[data-shape="square"] .card-indicator { border-radius: 0; }
+        .panel-toggle.card[data-shape="round"] { border-radius: 14px; }
+        .panel-toggle.card[data-shape="round"] .card-indicator { border-radius: 50%; }
+
         /* Scroll Controls */
         .scroll-info {
           font-family: monospace;
@@ -1639,116 +1981,29 @@ class YeelightCubeGradientCard extends HTMLElement {
           background: var(--secondary-background-color, #f6f8fa);
         }
 
-        .mode-btn {
-          padding: 6px 10px;
-          border: 1px solid var(--disabled-text-color, #d0d7de);
-          background: var(--card-background-color, white);
-          border-radius: 6px;
+        /* Filled style — soft pill background, no border; solid primary
+           highlight when active (combines pills' fill with buttons' active
+           colour, without buttons' border or pills' active gradient). */
+        .mode-btn-filled {
+          padding: 6px 14px;
+          border: none;
+          background: var(--secondary-background-color, #e7ecf0);
+          border-radius: 8px;
           cursor: pointer;
           font-size: 0.85em;
+          font-weight: 500;
+          color: var(--primary-text-color, #24292f);
           transition: all 0.2s ease;
           min-width: 60px;
         }
 
-        .mode-btn:hover {
-          background: var(--secondary-background-color, #f6f8fa);
-        }
-
-        .mode-btn.active {
-          background: var(--primary-color, #0969da);
-          color: var(--text-primary-color, #fff);
-          border-color: var(--primary-color, #0969da);
-        }
-
-        /* Colorized style */
-        .mode-btn-colorized {
-          padding: 8px 12px;
-          border: 2px solid transparent;
-          border-radius: 8px;
-          cursor: pointer;
-          font-size: 0.85em;
-          font-weight: 600;
-          transition: all 0.3s ease;
-          min-width: 70px;
-          position: relative;
-          overflow: hidden;
-        }
-
-        .mode-btn-colorized:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-          border-color: rgba(255,255,255,0.3);
-        }
-
-        .mode-btn-colorized.active {
-          transform: scale(1.05);
-          box-shadow: 0 6px 20px rgba(0,0,0,0.25);
-          border-color: var(--card-background-color, white);
-        }
-
-        .mode-btn-colorized::before {
-          content: '';
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          background: rgba(255,255,255,0.1);
-          opacity: 0;
-          transition: opacity 0.3s ease;
-        }
-
-        .mode-btn-colorized:hover::before {
-          opacity: 1;
-        }
-
-        /* Compact style - smaller, tight grid */
-        .mode-btn-compact {
-          padding: 4px 6px;
-          border: 1px solid var(--disabled-text-color, #d0d7de);
-          background: var(--card-background-color, white);
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 0.75em;
-          transition: all 0.15s ease;
-          text-align: center;
-        }
-
-        .mode-btn-compact:hover {
-          background: var(--secondary-background-color, #f6f8fa);
-          border-color: var(--primary-color, #0969da);
-        }
-
-        .mode-btn-compact.active {
-          background: var(--primary-color, #0969da);
-          color: var(--text-primary-color, #fff);
-          border-color: var(--primary-color, #0969da);
-          font-weight: 600;
-        }
-
-        /* Pills style - rounded, modern look */
-        .mode-btn-pill {
-          padding: 6px 14px;
-          border: none;
-          background: var(--secondary-background-color, #e7ecf0);
-          border-radius: 20px;
-          cursor: pointer;
-          font-size: 0.85em;
-          font-weight: 500;
-          transition: all 0.25s ease;
-          color: var(--primary-text-color, #24292f);
-        }
-
-        .mode-btn-pill:hover {
+        .mode-btn-filled:hover {
           background: var(--disabled-text-color, #d0d7de);
-          transform: scale(1.05);
         }
 
-        .mode-btn-pill.active {
-          background: linear-gradient(135deg, var(--primary-color, #0969da) 0%, var(--accent-color, #0550ae) 100%);
+        .mode-btn-filled.active {
+          background: var(--primary-color, #0969da);
           color: var(--text-primary-color, #fff);
-          box-shadow: 0 2px 8px rgba(9, 105, 218, 0.3);
-          transform: scale(1.05);
         }
 
         /* Dropdown style */
@@ -1817,9 +2072,147 @@ class YeelightCubeGradientCard extends HTMLElement {
         /* Gallery display styles from shared utility */
         ${galleryDisplayStyles}
 
-        .gallery-item[data-mode]:hover {
-          border-color: rgba(102, 126, 234, 0.5);
+        .gallery-item[data-mode] {
+          /* Base for the inset hover/pending ring.  Defining a TRANSPARENT
+             outline here means :hover only animates outline-color — the
+             previous outline shorthand transitioned from the UA default
+             ("invert"), which rendered as a white border flash on hover. */
+          outline: 2px solid transparent;
+          outline-offset: -2px;
         }
+        .gallery-item[data-mode]:hover {
+          outline-color: color-mix(
+            in srgb,
+            var(--primary-color, #03a9f4) 55%,
+            transparent
+          );
+          border-radius: 8px;
+        }
+
+        /* ── Shared appearance axes: shape + size (all selector styles) ── */
+        .gc-selector {
+          font-size: calc(1em * var(--gc-sel-scale, 1));
+        }
+        .gc-selector[data-shape="square"] .mode-btn-filled,
+        .gc-selector[data-shape="square"] .mode-select,
+        .gc-selector[data-shape="square"] .mode-chip,
+        .gc-selector[data-shape="square"] .mode-chip-swatch {
+          border-radius: 0 !important;
+        }
+        .gc-selector[data-shape="round"] .mode-btn-filled,
+        .gc-selector[data-shape="round"] .mode-select {
+          border-radius: 999px !important;
+        }
+        .gc-preview-shell[data-shape="square"] .gallery-item,
+        .gc-preview-shell[data-shape="square"] .gallery-item:hover,
+        .gc-preview-shell[data-shape="square"] .wheel-item,
+        .gc-preview-shell[data-shape="square"] .wheel-compact-item {
+          border-radius: 0 !important;
+        }
+        .gc-preview-shell[data-shape="round"] .gallery-item,
+        .gc-preview-shell[data-shape="round"] .gallery-item:hover,
+        .gc-preview-shell[data-shape="round"] .wheel-item,
+        .gc-preview-shell[data-shape="round"] .wheel-compact-item {
+          border-radius: 18px !important;
+        }
+
+        /* preview-grid style: fixed 2-column layout over the list renderer */
+        .gc-preview-shell[data-columns="2"] .gallery-display-grid {
+          grid-template-columns: repeat(2, 1fr) !important;
+        }
+
+        /* ── Chips selector style ────────────────────────────── */
+        .mode-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          padding: 5px 12px 5px 6px;
+          border: 1px solid var(--divider-color, #d0d7de);
+          border-radius: 16px;
+          background: var(--secondary-background-color, #f6f8fa);
+          color: var(--primary-text-color, #24292f);
+          font-size: 0.85em;
+          font-weight: 500;
+          cursor: pointer;
+          transition:
+            border-color 0.2s ease,
+            box-shadow 0.2s ease,
+            transform 0.15s ease;
+        }
+        .mode-chip:hover {
+          transform: translateY(-1px);
+          border-color: var(--primary-color, #0969da);
+        }
+        .mode-chip.active {
+          border-color: var(--primary-color, #0969da);
+          box-shadow: inset 0 0 0 1px var(--primary-color, #0969da);
+        }
+        .mode-chip-swatch {
+          width: 22px;
+          height: 22px;
+          border-radius: 50%;
+          flex: 0 0 auto;
+          box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+        }
+        .gc-selector[data-shape="rounded"] .mode-chip {
+          border-radius: 6px;
+        }
+        .gc-selector[data-shape="rounded"] .mode-chip-swatch {
+          border-radius: 4px;
+        }
+
+        /* ── Selection-pending pulse (in-flight feedback mechanic) ───── */
+        @keyframes gcPendingPulse {
+          0%,
+          100% {
+            outline-color: color-mix(
+              in srgb,
+              var(--primary-color, #03a9f4) 90%,
+              transparent
+            );
+          }
+          50% {
+            outline-color: color-mix(
+              in srgb,
+              var(--primary-color, #03a9f4) 25%,
+              transparent
+            );
+          }
+        }
+        .gc-pending {
+          outline: 2px solid var(--primary-color, #03a9f4) !important;
+          outline-offset: -2px !important;
+          animation: gcPendingPulse 0.9s ease-in-out infinite;
+        }
+
+        /* ── Active-mode label chip ──────────────────────────── */
+        .gc-active-mode-label {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          margin: 4px 0 8px;
+          padding: 3px 10px;
+          border-radius: 999px;
+          background: color-mix(
+            in srgb,
+            var(--primary-color, #0969da) 12%,
+            transparent
+          );
+          border: 1px solid
+            color-mix(in srgb, var(--primary-color, #0969da) 30%, transparent);
+          color: var(--primary-text-color, #24292f);
+          font-size: 0.8em;
+          font-weight: 600;
+        }
+        .gc-aml-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: var(--primary-color, #0969da);
+        }
+
+        /* Shared carousel component styles (carousel-utils) */
+        ${carouselStyles}
 
         /* Wheel navigation button styles */
         .wheel-nav-down:hover,
@@ -1845,8 +2238,23 @@ class YeelightCubeGradientCard extends HTMLElement {
       }
     `;
 
-    // Create/append persistent preview section OUTSIDE the innerHTML
-    if (!this._previewElement) {
+    // Create/append the persistent preview element ONLY when the selector
+    // uses a preview style.  For text-style selectors, tear it down so no
+    // preview machinery (wheel controller, backend calls) stays alive.
+    if (!(showModeSelector && isPreviewSelector)) {
+      if (this._wheelNavigationController) {
+        this._wheelNavigationController.destroy();
+        this._wheelNavigationController = null;
+      }
+      if (this._previewElement) {
+        if (this._previewElement.parentElement) {
+          this._previewElement.parentElement.removeChild(this._previewElement);
+        }
+        this._previewElement = null;
+        this._cachedPreviewHtml = null;
+        this._lastPreviewDataHash = null;
+      }
+    } else if (!this._previewElement) {
       // "[Gradient Card] Creating persistent preview element for first time",
       // { displayMode: this.config?.preview_display_mode }
       // );
@@ -1908,7 +2316,14 @@ class YeelightCubeGradientCard extends HTMLElement {
       if (this._previewElement.parentElement) {
         this._previewElement.parentElement.removeChild(this._previewElement);
       }
-      cardContentDiv.appendChild(this._previewElement);
+      const previewAnchor = cardContentDiv.querySelector("#preview-anchor");
+      if (previewAnchor && previewAnchor.parentNode) {
+        // insertBefore requires the reference node to be a direct child of the
+        // parent — use parentNode (the padding div), not cardContentDiv itself.
+        previewAnchor.parentNode.insertBefore(this._previewElement, previewAnchor);
+      } else {
+        cardContentDiv.appendChild(this._previewElement);
+      }
 
       // Refresh preview content from latest global cache.  This catches updates
       // that arrived while the element was detached or whose event-based
@@ -1924,8 +2339,9 @@ class YeelightCubeGradientCard extends HTMLElement {
         );
         if (container) {
           const newPreviewHtml = this._renderPreviewGrid();
-          container.style.overflow =
-            this._getDisplayMode() === "wheel" ? "visible" : "hidden";
+          // Always keep overflow visible — hover highlights (border +
+          // translate/scale transforms) were clipped by overflow:hidden.
+          container.style.overflow = "visible";
           container.innerHTML = newPreviewHtml;
           this._cachedPreviewHtml = newPreviewHtml;
           // Sync the preview-data hash so _getCachedPreviewGrid won't
@@ -1941,7 +2357,7 @@ class YeelightCubeGradientCard extends HTMLElement {
                   this.config.gallery_pixel_spacing,
                 previewSize: this.config.gallery_preview_size,
                 ignoreBlack: this.config.gallery_ignore_black_pixels,
-                displayMode: this.config.preview_display_mode,
+                displayMode: this._getModeSelectorStyle(),
                 showTitles: this.config.preview_show_titles,
                 editGradientModes: this.config.edit_gradient_modes,
                 modeVisibility: JSON.stringify(this._modeVisibility),
@@ -1973,7 +2389,8 @@ class YeelightCubeGradientCard extends HTMLElement {
           });
         }
       }
-    } else {
+    } else if (showModeSelector && isPreviewSelector) {
+      // Only a genuine failure when a preview element was expected
       console.warn("[Gradient Card] Failed to append preview element", {
         reason: !cardContentDiv
           ? "cardContentDiv not found"
@@ -2005,16 +2422,94 @@ class YeelightCubeGradientCard extends HTMLElement {
     }, 0);
   }
 
+  /**
+   * In-place update of every dynamic UI element.  Called instead of a full
+   * DOM rebuild when the structural configuration is unchanged — this is
+   * what makes state updates flicker-free.
+   */
+  _syncDynamicUI(stateObj, currentAngle) {
+    const root = this.shadowRoot;
+    if (!root) return;
+
+    // 1. Text-style selector: active button / dropdown value
+    this._syncTextSelector();
+
+    // 2. Panel toggle state (checkbox + card-style active class)
+    const applyToPanel =
+      this._optimisticPanelMode !== undefined
+        ? this._optimisticPanelMode
+        : stateObj.attributes.full_panel || false;
+    const panelCheckbox = root.getElementById("apply-to-panel");
+    if (panelCheckbox && panelCheckbox.checked !== applyToPanel) {
+      panelCheckbox.checked = applyToPanel;
+    }
+    const cardToggle = root.querySelector(
+      ".panel-toggle.card[data-toggle-card='true']",
+    );
+    if (cardToggle) cardToggle.classList.toggle("active", applyToPanel);
+    const tabsEl = root.querySelector(".panel-toggle.tabs");
+    if (tabsEl) {
+      tabsEl.dataset.active = applyToPanel ? "1" : "0";
+      tabsEl.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.classList.toggle("active", (btn.dataset.panelSeg === "true") === applyToPanel);
+      });
+    }
+    const chipEl = root.querySelector(".panel-toggle.chip[data-chip-toggle='true']");
+    if (chipEl) chipEl.classList.toggle("active", applyToPanel);
+    const minimalEl = root.querySelector(".panel-toggle.minimal[data-minimal-toggle='true']");
+    if (minimalEl) minimalEl.classList.toggle("active", applyToPanel);
+
+    // 3. Fill-panel column selector value
+    const fillSel = root.getElementById("fill-panel-cols");
+    if (fillSel) {
+      const cols =
+        this._optimisticFillCols !== undefined
+          ? this._optimisticFillCols
+          : FILL_PANEL_CHAR_TO_COLS[stateObj.attributes.custom_text || ""] || 0;
+      if (fillSel.value !== String(cols)) fillSel.value = String(cols);
+    }
+
+    // 4. Angle visuals (rotary/capsule/slider/value displays).
+    //    render() already returns early during active drags, so this never
+    //    fights the user's pointer.
+    this._updateRotaryDisplay(currentAngle);
+    this._syncAngleValueDisplay(currentAngle);
+    const angleSlider = root.getElementById("angleslider");
+    if (angleSlider) angleSlider.value = Math.round(currentAngle);
+    this._updateGradientButtons(currentAngle);
+
+    // 5. Preview section: highlight + content refresh from cache.
+    //    _updatePreviewSection string-compares against the last HTML we set,
+    //    so this is a no-op unless preview data actually changed.
+    this._markActiveMode();
+    this._updatePreviewSection();
+  }
+
+  /**
+   * Sync the text-style mode selector (active classes / dropdown value)
+   * to the current mode without rebuilding DOM.
+   */
+  _syncTextSelector() {
+    const root = this.shadowRoot;
+    if (!root) return;
+    const mode = this._getCurrentMode() || "Solid Color";
+    root.querySelectorAll(".mode-btn-filled, .mode-chip").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.mode === mode);
+    });
+    const dropdown = root.querySelector(".mode-select");
+    if (dropdown && !this._dropdownOpen && dropdown.value !== mode) {
+      dropdown.value = mode;
+    }
+  }
+
   addEventListeners() {
     const root = this.shadowRoot;
     if (!root) return;
 
-    // Runtime Controls - Color Mode selectors (all styles)
+    // Runtime Controls - Color Mode selectors (filled buttons + chips)
     const modeSelectors = [
-      ...root.querySelectorAll(".mode-btn"),
-      ...root.querySelectorAll(".mode-btn-colorized"),
-      ...root.querySelectorAll(".mode-btn-compact"),
-      ...root.querySelectorAll(".mode-btn-pill"),
+      ...root.querySelectorAll(".mode-btn-filled"),
+      ...root.querySelectorAll(".mode-chip"),
     ];
 
     modeSelectors.forEach((btn) => {
@@ -2275,6 +2770,38 @@ class YeelightCubeGradientCard extends HTMLElement {
       });
     }
 
+    root.querySelectorAll(".panel-toggle.tabs .tab-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        const targetValue = btn.dataset.panelSeg === "true";
+        const cb = root.getElementById("apply-to-panel");
+        if (cb && cb.checked !== targetValue) {
+          cb.checked = targetValue;
+          cb.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      });
+    });
+
+    const chipToggle = root.querySelector(
+      ".panel-toggle.chip[data-chip-toggle='true']",
+    );
+    if (chipToggle) {
+      chipToggle.addEventListener("click", (e) => {
+        e.preventDefault();
+        this._togglePanelCheckbox();
+      });
+    }
+
+    const minimalToggle = root.querySelector(
+      ".panel-toggle.minimal[data-minimal-toggle='true']",
+    );
+    if (minimalToggle) {
+      minimalToggle.addEventListener("click", (e) => {
+        e.preventDefault();
+        this._togglePanelCheckbox();
+      });
+    }
+
     // Inject visibility overlays in edit mode (for initial render)
     this._injectVisibilityOverlays(
       root,
@@ -2285,17 +2812,23 @@ class YeelightCubeGradientCard extends HTMLElement {
     // not here, to avoid double-binding when the preview DOM is updated.
   }
 
-  _renderPanelToggle(applyToWholePanel, style) {
+  _renderPanelToggle(applyToWholePanel, style, shape = "round") {
     // Use optimistic value if set
     if (this._optimisticPanelMode !== undefined) {
       applyToWholePanel = this._optimisticPanelMode;
     }
     const checkboxId = "apply-to-panel";
+    const shapeAttr = `data-shape="${shape}"`;
+
+    // Inline legacy migrations so old saved configs render correctly
+    // without requiring an editor round-trip to normalise.
+    if (style === "default") style = "minimal";
+    if (style === "segmented") style = "tabs";
 
     switch (style) {
       case "switch":
         return `
-          <div class="panel-toggle switch">
+          <div class="panel-toggle switch" ${shapeAttr}>
             <label for="${checkboxId}">Apply to Whole Panel</label>
             <div class="switch-container">
               <input type="checkbox" id="${checkboxId}" ${
@@ -2310,7 +2843,7 @@ class YeelightCubeGradientCard extends HTMLElement {
         return `
           <div class="panel-toggle card ${
             applyToWholePanel ? "active" : ""
-          }" data-toggle-card="true">
+          }" ${shapeAttr} data-toggle-card="true">
             <label for="${checkboxId}">Apply to Whole Panel</label>
             <div class="card-indicator"></div>
             <input type="checkbox" id="${checkboxId}" ${
@@ -2319,14 +2852,38 @@ class YeelightCubeGradientCard extends HTMLElement {
           </div>
         `;
 
-      case "default":
+      case "tabs":
+        return `
+          <div class="panel-toggle tabs" ${shapeAttr} data-active="${applyToWholePanel ? "1" : "0"}">
+            <input type="checkbox" id="${checkboxId}" style="display:none;" ${applyToWholePanel ? "checked" : ""}>
+            <div class="tabs-thumb"></div>
+            <button class="tab-btn${!applyToWholePanel ? " active" : ""}" data-panel-seg="false">
+              <svg width="12" height="9" viewBox="0 0 12 9" fill="currentColor" style="flex-shrink:0;opacity:0.75"><rect x="0" y="0" width="3" height="3" rx="0.5"/><rect x="4.5" y="0" width="3" height="3" rx="0.5"/><rect x="9" y="0" width="3" height="3" rx="0.5"/><rect x="0" y="5" width="3" height="3" rx="0.5"/><rect x="4.5" y="5" width="3" height="3" rx="0.5"/><rect x="9" y="5" width="3" height="3" rx="0.5"/></svg>
+              Pixels
+            </button>
+            <button class="tab-btn${applyToWholePanel ? " active" : ""}" data-panel-seg="true">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" style="flex-shrink:0;opacity:0.85"><rect x="0" y="0" width="5" height="5" rx="1"/><rect x="7" y="0" width="5" height="5" rx="1"/><rect x="0" y="7" width="5" height="5" rx="1"/><rect x="7" y="7" width="5" height="5" rx="1"/></svg>
+              Panel
+            </button>
+          </div>
+        `;
+
+      case "chip":
+        return `
+          <div class="panel-toggle chip${applyToWholePanel ? " active" : ""}" ${shapeAttr} data-chip-toggle="true">
+            <input type="checkbox" id="${checkboxId}" style="display:none;" ${applyToWholePanel ? "checked" : ""}>
+            <span class="chip-dot"></span>
+            <span class="chip-text">Whole Panel</span>
+          </div>
+        `;
+
+      case "minimal":
       default:
         return `
-          <div class="panel-toggle default">
-            <input type="checkbox" id="${checkboxId}" ${
-              applyToWholePanel ? "checked" : ""
-            }>
-            <label for="${checkboxId}">Apply to Whole Panel</label>
+          <div class="panel-toggle minimal${applyToWholePanel ? " active" : ""}" ${shapeAttr} data-minimal-toggle="true">
+            <input type="checkbox" id="${checkboxId}" style="display:none;" ${applyToWholePanel ? "checked" : ""}>
+            <span class="minimal-indicator"></span>
+            <span class="minimal-text">Whole Panel</span>
           </div>
         `;
     }
@@ -2366,6 +2923,10 @@ class YeelightCubeGradientCard extends HTMLElement {
   }
 
   _updatePreviewSection() {
+    // Nothing to update when the selector doesn't render previews (e.g. a
+    // stale preview event arriving right after switching to a text style).
+    if (!this._isPreviewSelectorActive()) return;
+
     const displayMode = this._getDisplayMode();
 
     // For wheel mode, try surgical update first (only update preview images)
@@ -2400,38 +2961,158 @@ class YeelightCubeGradientCard extends HTMLElement {
     // For other modes OR if wheel doesn't exist yet, update the entire container
     const container = this.shadowRoot?.querySelector(".preview-grid-container");
     if (container) {
-      // Ensure overflow matches current display mode
-      container.style.overflow = displayMode === "wheel" ? "visible" : "hidden";
+      // Always keep overflow visible — hover highlights (border + transforms
+      // like translateY/scale) on preview items were clipped at the container
+      // edges by the previous overflow:hidden.  Items are max-width-bounded so
+      // nothing can actually escape the layout.
+      container.style.overflow = "visible";
 
       // Generate new preview HTML with updated data
       const newPreviewHtml = this._renderPreviewGrid();
+      const presentationKey = this._getPreviewPresentationKey();
 
-      // currentLength: container.innerHTML.length,
-      // newLength: newPreviewHtml.length,
-      // willUpdate: container.innerHTML !== newPreviewHtml,
-      // });
-
-      // Only update if content actually changed
-      if (container.innerHTML !== newPreviewHtml) {
-        container.innerHTML = newPreviewHtml;
-
-        // Re-attach event listeners for preview items after updating DOM
-        this._attachPreviewEventListeners();
+      // Compare against the LAST HTML STRING WE SET — not container.innerHTML.
+      // The browser re-serializes DOM (attribute order, entity encoding), so
+      // `container.innerHTML !== generatedString` was effectively ALWAYS true
+      // and every call replaced the full preview DOM — the primary source of
+      // visible blinking on each state/preview update.
+      if (newPreviewHtml !== this._cachedPreviewHtml) {
+        // SURGICAL ITEM UPDATE (same technique the wheel uses): when only the
+        // preview CONTENT changed (text/colors/angle) and the item structure
+        // and presentation are identical, re-render just each item's matrix
+        // image.  The container DOM — layout, hover state, listeners — is
+        // untouched, so content updates are completely flicker-free.
+        const structureStable =
+          presentationKey === this._lastPreviewPresentationKey;
+        if (structureStable && this._updateGalleryItemPreviews()) {
+          this._cachedPreviewHtml = newPreviewHtml;
+        } else {
+          container.innerHTML = newPreviewHtml;
+          this._cachedPreviewHtml = newPreviewHtml;
+          // Re-attach event listeners for preview items after updating DOM
+          this._attachPreviewEventListeners();
+        }
       } else {
-        // HTML unchanged — but listeners may be missing if _previewElement was
-        // just recreated (e.g. after toggling titles). The initial HTML in the
-        // new element is identical to the generated HTML, so innerHTML doesn't
-        // change, but its gallery items have never had click listeners bound.
-        // _attachPreviewEventListeners uses per-element guards (_gcClickBound)
-        // to prevent duplicate listeners on already-bound items.
+        // Content unchanged — but listeners may be missing if _previewElement
+        // was just recreated.  _attachPreviewEventListeners uses per-element
+        // guards (_gcClickBound) and also refreshes the active-mode highlight.
         this._attachPreviewEventListeners();
       }
-
-      // Update cache
-      this._cachedPreviewHtml = newPreviewHtml;
+      this._lastPreviewPresentationKey = presentationKey;
     } else {
       console.warn("[Gradient Card] Container not found in DOM!");
     }
+  }
+
+  /**
+   * Presentation-affecting config signature.  When this changes, the preview
+   * container structure must be rebuilt; when only content (text/colors/angle)
+   * changes, per-item surgical updates are safe.
+   */
+  _getPreviewPresentationKey() {
+    const cfg = this.config || {};
+    return JSON.stringify({
+      display: this._getModeSelectorStyle(),
+      bg: cfg.gallery_background_color,
+      px: cfg.gallery_pixel_style,
+      gap: cfg.gallery_spacing_mode || cfg.gallery_pixel_spacing,
+      size: cfg.gallery_preview_size,
+      ib: cfg.gallery_ignore_black_pixels,
+      titles: cfg.preview_show_titles,
+      shadow: cfg.gallery_matrix_box_shadow,
+      edit: cfg.edit_gradient_modes === true,
+      vis: this._modeVisibility,
+      shape: resolveSelectorShape(cfg),
+      ci: this._carouselIndex ?? null, // carousel slide is part of presentation
+    });
+  }
+
+  /**
+   * Surgically update the matrix image inside each gallery item (list / row
+   * display modes) from the current preview cache — the gallery counterpart
+   * of _updateWheelPreviews().  Returns true when all items were updated in
+   * place; false when the item structure doesn't match (caller falls back to
+   * a full container swap).
+   */
+  _updateGalleryItemPreviews() {
+    const previewData = this._previewCache().data;
+    if (!previewData) return false;
+    // Edit mode injects overlay elements — use the full rebuild path there.
+    if (this.config?.edit_gradient_modes === true) return false;
+
+    const rows = previewData.rows || 5;
+    const cols = previewData.cols || 20;
+
+    const expectedModes = GRADIENT_MODES.filter(
+      (m) => previewData.previews[m] && this._isModeVisible(m),
+    );
+    const items = Array.from(
+      this.shadowRoot?.querySelectorAll(
+        ".gallery-item[data-mode]:not(.wheel-item)",
+      ) || [],
+    );
+    if (items.length !== expectedModes.length) return false;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].dataset.mode !== expectedModes[i]) return false;
+    }
+
+    // Same option resolution as _renderPreviewGrid / _updateWheelPreviews
+    const galleryBgColor = this.config.gallery_background_color || "black";
+    const galleryPixelStyle = this.config.gallery_pixel_style || "square";
+    const galleryPreviewSize = galleryPreviewSizeToPx(
+      this.config.gallery_preview_size,
+    );
+    const gallerySpacingMode =
+      this.config.gallery_spacing_mode ||
+      (this.config.gallery_pixel_spacing !== false ? "normal" : "none");
+    const galleryPixelGap =
+      gallerySpacingMode === "normal"
+        ? Math.max(0, (galleryPreviewSize / 350) * 3)
+        : 0;
+    const galleryPixelBoxShadow =
+      gallerySpacingMode === "subtle" || gallerySpacingMode === "normal";
+    const ignoreBlackPixels = this.config.gallery_ignore_black_pixels === true;
+    // Grid mode halves the effective preview size (matches _renderPreviewGrid).
+    // Without this, the surgical updater writes full-size SVGs into 2-column
+    // cells, overflowing the container and making all sizes look identical.
+    const effectivePreviewSize =
+      this._getModeSelectorStyle() === "preview-grid"
+        ? Math.round(galleryPreviewSize * 0.5)
+        : galleryPreviewSize;
+
+    for (const item of items) {
+      const previewColors = previewData.previews[item.dataset.mode];
+      if (!previewColors) return false;
+      const previewContainer = item.querySelector(".gallery-matrix-preview");
+      if (!previewContainer) return false;
+
+      // Flip vertically (same convention as _renderPreviewGrid)
+      const flippedColors = [];
+      for (let row = rows - 1; row >= 0; row--) {
+        for (let col = 0; col < cols; col++) {
+          flippedColors.push(previewColors[row * cols + col]);
+        }
+      }
+
+      previewContainer.outerHTML = this._renderSingleMatrixPreview(
+        flippedColors,
+        {
+          rows,
+          cols,
+          bgColor: galleryBgColor,
+          pixelStyle: galleryPixelStyle,
+          pixelGap: galleryPixelGap,
+          previewSize: effectivePreviewSize,
+          ignoreBlackPixels,
+          matrixBoxShadow: this.config.gallery_matrix_box_shadow === true,
+          pixelBoxShadow: galleryPixelBoxShadow,
+        },
+      );
+    }
+
+    // Keep the highlight consistent after image swaps
+    this._markActiveMode();
+    return true;
   }
 
   /**
@@ -2540,16 +3221,33 @@ class YeelightCubeGradientCard extends HTMLElement {
   }
 
   /**
-   * Return the normalised preview display mode.
-   * Maps legacy values: "inline" → "grid", "gallery" → "list".
-   * Defaults to "grid" when unset.
+   * Return the resolved unified mode-selector style (see resolveModeSelectorStyle).
+   */
+  _getModeSelectorStyle() {
+    return resolveModeSelectorStyle(this.config);
+  }
+
+  /**
+   * True when the mode selector is shown AND uses a preview style.
+   * All preview machinery (backend preview service, event subscription,
+   * wheel controller, persistent preview element) is active only then.
+   */
+  _isPreviewSelectorActive() {
+    if (this.config?.show_mode_selector === false) return false;
+    return PREVIEW_SELECTOR_STYLES.includes(this._getModeSelectorStyle());
+  }
+
+  /**
+   * Return the normalised preview display mode derived from the unified
+   * selector style: list / compact / carousel / wheel.
+   * (preview-grid renders through the list renderer with a fixed column
+   * override — see the [data-columns] CSS.)
    */
   _getDisplayMode() {
-    const raw = this.config?.preview_display_mode;
-    // Map legacy values and removed "grid" mode to "list"
-    if (raw === "inline" || raw === "grid") return "list";
-    if (raw === "gallery") return "list";
-    return raw || "list";
+    const style = this._getModeSelectorStyle();
+    if (style === "preview-wheel") return "wheel";
+    if (style === "preview-carousel") return "carousel";
+    return "list";
   }
 
   /**
@@ -2574,17 +3272,42 @@ class YeelightCubeGradientCard extends HTMLElement {
     this._optimisticMode = mode;
     this._lastModeChangeTime = Date.now();
     this._markActiveMode();
+    // In-flight feedback: pulse the selected item until the backend confirms
+    this._setPendingPulse(mode);
 
-    const applyToPanel =
-      this.shadowRoot?.getElementById("apply-to-panel")?.checked || false;
+    // Read the panel setting from the checkbox when rendered; when the panel
+    // toggle is hidden (show_panel_toggle=false) fall back to the entity's
+    // actual full_panel state so selecting a mode never silently disables
+    // panel mode.
+    const panelCheckbox = this.shadowRoot?.getElementById("apply-to-panel");
+    const applyToPanel = panelCheckbox
+      ? panelCheckbox.checked
+      : this._optimisticPanelMode !== undefined
+        ? this._optimisticPanelMode
+        : this._hass?.states[this._getPrimaryEntity()]?.attributes
+            ?.full_panel || false;
 
     try {
       await this.callServiceOnTargetEntities("set_mode", {
         mode,
         full_panel: applyToPanel,
       });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      this._optimisticMode = null;
+      // Keep _optimisticMode SET until the backend echoes the new mode back
+      // through entity state (cleared in `set hass`).  The service resolves
+      // before the hardware command completes (fire-and-forget backend), so
+      // clearing after a blind delay made the highlight snap back to the OLD
+      // mode until the echo arrived — a visible blink on every selection.
+      // Safety timeout: drop the optimistic state if no echo arrives (e.g.
+      // lamp offline) so the UI resyncs with reality.
+      if (this._optimisticModeTimeout)
+        clearTimeout(this._optimisticModeTimeout);
+      this._optimisticModeTimeout = setTimeout(() => {
+        this._optimisticModeTimeout = null;
+        if (this._optimisticMode) {
+          this._optimisticMode = null;
+          if (this.isConnected) this._markActiveMode();
+        }
+      }, 5000);
       // For wheel mode, sync wheel position to the new mode and update highlight
       if (this._getDisplayMode() === "wheel") {
         this._lastWheelMode = mode;
@@ -2596,6 +3319,10 @@ class YeelightCubeGradientCard extends HTMLElement {
     } catch (error) {
       console.error("Error changing mode:", error);
       this._optimisticMode = null;
+      if (this._optimisticModeTimeout) {
+        clearTimeout(this._optimisticModeTimeout);
+        this._optimisticModeTimeout = null;
+      }
       if (this._getDisplayMode() === "wheel") {
         this._syncWheelToCurrentMode();
         this._markActiveMode();
@@ -2624,6 +3351,12 @@ class YeelightCubeGradientCard extends HTMLElement {
     // Update gallery items (.gallery-item) and wheel items (.wheel-item)
     const allItems = root.querySelectorAll("[data-mode]");
     allItems.forEach((item) => {
+      // Carousel: navigation = instant selection; the active-mode ring
+      // would be a distracting flash on the only visible item.
+      if (this._getDisplayMode() === "carousel") {
+        item.removeAttribute("data-active-mode");
+        return;
+      }
       const mode = item.dataset.mode;
       if (highlightActive && currentMode && mode === currentMode) {
         item.setAttribute("data-active-mode", "true");
@@ -2631,6 +3364,68 @@ class YeelightCubeGradientCard extends HTMLElement {
         item.removeAttribute("data-active-mode");
       }
     });
+
+    // Active-mode label chip: update text in place (independent of highlight)
+    const label = root.getElementById("gc-active-mode-label");
+    if (label) {
+      const txt = label.querySelector(".gc-aml-text");
+      const modeForLabel = this._getCurrentMode() || "—";
+      if (txt && txt.textContent !== modeForLabel) {
+        txt.textContent = modeForLabel;
+      }
+    }
+
+    // Selection pulse: clear once the backend has confirmed (no optimistic
+    // mode pending anymore)
+    if (!this._optimisticMode) {
+      root
+        .querySelectorAll(".gc-pending")
+        .forEach((el) => el.classList.remove("gc-pending"));
+
+      // Release the carousel-navigating guard ONLY when the echoed backend
+      // mode matches what the carousel is currently displaying.
+      //
+      // Critical timing issue this fixes: _gcCarouselNavigate calls
+      // _updatePreviewSection() BEFORE _selectMode(), so _optimisticMode is
+      // still null at that point. Without this check, the guard would be
+      // released immediately, the sync block below would fire with the OLD
+      // entity mode, and _carouselIndex would flash back to the previous item.
+      if (this._carouselNavigating) {
+        const _navModes = this._getVisibleModeList();
+        const _displayedMode = _navModes[this._carouselIndex];
+        const _echoedMode = this._getCurrentMode(); // entity, since _optimisticMode is null
+        if (_displayedMode && _echoedMode === _displayedMode) {
+          // Echo confirmed our navigation — safe to release the guard.
+          this._setCarouselNavigating(false);
+        }
+        // If modes don't match yet, keep the guard: either the echo hasn't
+        // arrived or _selectMode hasn't set _optimisticMode yet.
+      }
+    }
+
+    // Carousel follows the active mode when it changes EXTERNALLY
+    // (automations, another card, select entity) — but NEVER while the user
+    // is navigating the carousel (_carouselNavigating) or while a selection
+    // is in-flight (_processingModeChange / _optimisticMode).  Previously
+    // a race between a fast echo clearing _optimisticMode and the finally
+    // block clearing _processingModeChange allowed a brief window where
+    // this block would reset _carouselIndex back to the OLD mode, causing
+    // the carousel to flash the previous item before the echo arrived.
+    if (
+      this._getModeSelectorStyle() === "preview-carousel" &&
+      !this._carouselNavigating &&
+      !this._processingModeChange &&
+      !this._optimisticMode &&
+      this._carouselIndex != null
+    ) {
+      const activeMode = this._getCurrentMode();
+      const modes = this._getVisibleModeList();
+      const idx = activeMode ? modes.indexOf(activeMode) : -1;
+      if (idx >= 0 && idx !== this._carouselIndex) {
+        this._carouselIndex = idx;
+        this._updatePreviewSection();
+      }
+    }
   }
 
   _attachPreviewEventListeners() {
@@ -2669,14 +3464,158 @@ class YeelightCubeGradientCard extends HTMLElement {
     const displayMode = this._getDisplayMode();
     if (displayMode === "wheel") {
       if (!this._wheelNavigationController) {
-        // "[Gradient Card] Initializing wheel navigation (DOM was updated)"
-        // );
         this._setupWheelNavigation();
-      } else {
-        // "[Gradient Card] Wheel already exists (shouldn't happen after DOM update)"
-        // );
       }
     }
+
+    // Carousel mode: bind directly on the nav buttons and dots that were
+    // just written by innerHTML.  Direct binding is simpler and more reliable
+    // than delegated binding on a guarded container — the buttons are always
+    // fresh DOM elements after an innerHTML swap so there are never duplicates.
+    if (displayMode === "carousel") {
+      // Prev / Next buttons — guarded with _gcNavBound so repeated
+      // _attachPreviewEventListeners calls don't stack extra listeners.
+      root.querySelectorAll('[data-action="navigate"]').forEach((btn) => {
+        if (btn._gcNavBound) return;
+        btn._gcNavBound = true;
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const dir = parseInt(btn.dataset.direction, 10);
+          this._gcCarouselNavigate(dir || 1);
+        });
+      });
+
+      // Indicator dots — same guard
+      root.querySelectorAll('[data-action="set-index"]').forEach((dot) => {
+        if (dot._gcDotBound) return;
+        dot._gcDotBound = true;
+        dot.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const idx = parseInt(dot.dataset.index, 10);
+          this._gcCarouselSetIndex(idx || 0);
+        });
+      });
+
+      // Preview item click (select current mode)
+      root.querySelectorAll('[data-action="select-mode"]').forEach((item) => {
+        if (item._gcClickBound) return;
+        item._gcClickBound = true;
+        item.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const mode = item.dataset.mode;
+          if (mode && this.config?.edit_gradient_modes !== true) {
+            this._selectMode(mode);
+          }
+        });
+      });
+
+      // Swipe gesture
+      const shell = root.querySelector(".gc-preview-shell");
+      if (shell && !shell._gcSwipeBound) {
+        shell._gcSwipeBound = true;
+        let _tx = 0;
+        shell.addEventListener(
+          "touchstart",
+          (e) => {
+            _tx = e.touches[0].clientX;
+          },
+          { passive: true },
+        );
+        shell.addEventListener(
+          "touchend",
+          (e) => {
+            const dx = e.changedTouches[0].clientX - _tx;
+            if (Math.abs(dx) > 40) {
+              this._gcCarouselNavigate(dx < 0 ? 1 : -1);
+            }
+          },
+          { passive: true },
+        );
+      }
+    }
+  }
+
+  /** Ordered list of currently visible gradient modes (matches preview items). */
+  _getVisibleModeList() {
+    // Fall back to the full gradient mode list when preview data hasn't
+    // arrived yet so carousel navigation works from the very first render.
+    const data = this._previewCache().data;
+    if (!data) return GRADIENT_MODES.filter((m) => this._isModeVisible(m));
+    return GRADIENT_MODES.filter(
+      (m) => data.previews[m] && this._isModeVisible(m),
+    );
+  }
+
+  // In carousel mode navigation IS selection: one item displayed at a time,
+  // moving to the next/previous immediately applies that mode to the lamp.
+  _gcCarouselNavigate(direction) {
+    const modes = this._getVisibleModeList();
+    if (!modes.length) {
+      return;
+    }
+    if (this._carouselIndex == null) {
+      const active = this._getCurrentMode();
+      const idx = active ? modes.indexOf(active) : -1;
+      this._carouselIndex = idx >= 0 ? idx : 0;
+    }
+    const next =
+      (((this._carouselIndex + direction) % modes.length) + modes.length) %
+      modes.length;
+    this._carouselIndex = next;
+    // Show the new item IMMEDIATELY so the UI is responsive before the
+    // service round-trip completes.
+    this._setCarouselNavigating(true);
+    this._updatePreviewSection();
+    this._selectMode(modes[next]);
+  }
+
+  _gcCarouselSetIndex(index) {
+    const modes = this._getVisibleModeList();
+    if (!modes.length) return;
+    const clamped = Math.max(0, Math.min(index, modes.length - 1));
+    this._carouselIndex = clamped;
+    this._setCarouselNavigating(true);
+    this._updatePreviewSection();
+    this._selectMode(modes[clamped]);
+  }
+
+  /**
+   * Set / clear the _carouselNavigating guard.  While active, the
+   * external-sync block in _markActiveMode is suppressed so no intermediate
+   * state-change render can flash _carouselIndex back to the old mode.
+   * Released automatically when the echo confirms the new mode, with a
+   * 5 s safety timeout in case the echo never arrives.
+   */
+  _setCarouselNavigating(active) {
+    if (this._carouselNavTimer) {
+      clearTimeout(this._carouselNavTimer);
+      this._carouselNavTimer = null;
+    }
+    this._carouselNavigating = !!active;
+    if (active) {
+      this._carouselNavTimer = setTimeout(() => {
+        this._carouselNavTimer = null;
+        this._carouselNavigating = false;
+      }, 5000);
+    }
+  }
+
+  /**
+   * Selection feedback mechanic: pulse the chosen item(s) while the command
+   * is in flight.  Cleared by _markActiveMode once the backend confirms.
+   */
+  _setPendingPulse(mode) {
+    const root = this.shadowRoot;
+    if (!root) return;
+    // Carousel: navigation is instant selection; no in-flight pulse needed.
+    if (this._getDisplayMode() === "carousel") return;
+    root
+      .querySelectorAll(".gc-pending")
+      .forEach((el) => el.classList.remove("gc-pending"));
+    if (!mode) return;
+    root.querySelectorAll("[data-mode]").forEach((el) => {
+      if (el.dataset.mode === mode) el.classList.add("gc-pending");
+    });
   }
 
   _syncWheelToCurrentMode() {
@@ -2777,7 +3716,7 @@ class YeelightCubeGradientCard extends HTMLElement {
             this.config.gallery_pixel_spacing,
           previewSize: this.config.gallery_preview_size,
           ignoreBlack: this.config.gallery_ignore_black_pixels,
-          displayMode: this.config.preview_display_mode,
+          displayMode: this._getModeSelectorStyle(),
           showTitles: this.config.preview_show_titles,
           editGradientModes: this.config.edit_gradient_modes,
           modeVisibility: JSON.stringify(this._modeVisibility),
@@ -2864,10 +3803,12 @@ class YeelightCubeGradientCard extends HTMLElement {
       };
     }).filter((item) => item !== null);
 
-    // Render using shared utility
-    // Resolve the current active mode for highlighting
+    // Render using shared utility.
+    // IMPORTANT: the active-mode highlight is NOT baked into the HTML here.
+    // _markActiveMode() applies it afterwards as DOM attributes on stable DOM.
+    // Baking it made the generated string change on every mode switch, which
+    // forced a full preview DOM replacement (= blink) on every selection.
     const highlightActive = this.config.highlight_active_mode !== false;
-    const currentMode = highlightActive ? this._getCurrentMode() : null;
 
     // Resolve gallery pixel box shadow from spacing mode
     const gallerySpacingMode =
@@ -2876,13 +3817,120 @@ class YeelightCubeGradientCard extends HTMLElement {
     const galleryPixelBoxShadow =
       gallerySpacingMode === "subtle" || gallerySpacingMode === "normal";
 
+    // Shared appearance axes (see resolveSelectorShape): applied through the
+    // shell's data attributes + CSS overrides so the shared renderers stay
+    // untouched and every display mode obeys the same shape setting.
+    const selectorShape = resolveSelectorShape(this.config);
+    const selectorStyle = this._getModeSelectorStyle();
+    const shellAttrs = `data-shape="${selectorShape}"${
+      selectorStyle === "preview-grid" ? ' data-columns="2"' : ""
+    }`;
+
+    // Grid mode: halve the effective preview size so matrix previews fit
+    // naturally within 2-column cells and the size slider has a visible
+    // effect on item height.  Without this, items are clipped (overflow:hidden)
+    // because a 450px preview doesn\'t fit a ~230px-wide column.
+    const effectivePreviewSize =
+      selectorStyle === "preview-grid"
+        ? Math.round(galleryPreviewSize * 0.5)
+        : galleryPreviewSize;
+
+    // ── Carousel display mode ─────────────────────────────────────────
+    // Self-contained string renderer: no Lit / ha-icon dependencies,
+    // delegated click via data-action attributes handled in
+    // _attachPreviewEventListeners.
+    if (displayMode === "carousel") {
+      if (this._carouselIndex == null) {
+        const activeIdx = items.findIndex(
+          (it) => it.dataMode === this._getCurrentMode(),
+        );
+        this._carouselIndex = activeIdx >= 0 ? activeIdx : 0;
+      }
+      this._carouselIndex = Math.max(
+        0,
+        Math.min(this._carouselIndex, items.length - 1),
+      );
+
+      const ci = this._carouselIndex;
+      const item = items[ci];
+      if (!item) return ``;
+
+      const btnStyle = (disabled) =>
+        `display:inline-flex;align-items:center;justify-content:center;
+         width:36px;height:36px;flex:0 0 36px;
+         border:1px solid var(--divider-color,#d0d7de);
+         border-radius:${selectorShape === "round" ? "50%" : selectorShape === "square" ? "0" : "8px"};
+         background:var(--secondary-background-color,#f6f8fa);
+         color:var(--primary-text-color,#333);
+         cursor:${disabled ? "default" : "pointer"};
+         opacity:${disabled ? 0.35 : 1};
+         font-size:18px;line-height:1;user-select:none;
+         transition:background 0.15s,box-shadow 0.15s;`;
+
+      const dotHtml = items
+        .map(
+          (_, idx) =>
+            `<span data-action="set-index" data-index="${idx}"
+               style="display:inline-block;width:${idx === ci ? 12 : 7}px;
+                      height:${idx === ci ? 7 : 7}px;
+                      border-radius:999px;
+                      background:${idx === ci ? "var(--primary-color,#03a9f4)" : "var(--divider-color,#ccc)"};
+                      cursor:pointer;
+                      transition:all 0.2s ease;"></span>`,
+        )
+        .join("");
+
+      const previewHtml = `
+        <div class="gallery-item gc-carousel-item" data-mode="${item.dataMode}"
+             data-action="select-mode"
+             style="cursor:pointer;display:flex;flex-direction:column;align-items:center;
+                    gap:6px;padding:10px;border-radius:8px;
+                    background:${galleryBgColor === "transparent" ? "transparent" : galleryBgColor};
+                    max-width:100%;box-sizing:border-box;transition:all 0.2s ease;">
+          ${renderMatrixPreview(item.colorData, {
+            rows,
+            cols,
+            bgColor: galleryBgColor,
+            pixelStyle: galleryPixelStyle,
+            pixelGap: galleryPixelGap,
+            previewSize: galleryPreviewSize,
+            ignoreBlackPixels,
+            matrixBoxShadow: this.config.gallery_matrix_box_shadow === true,
+            pixelBoxShadow: galleryPixelBoxShadow,
+          })}
+          ${
+            showTitles
+              ? `<div style="font-size:13px;font-weight:500;${galleryBgColor === "black" ? "color:#fff;" : "color:var(--primary-text-color);"}">${
+                  item.dataMode
+                }</div>`
+              : ""
+          }
+        </div>`;
+
+      return `
+        <div class="gc-preview-shell" ${shellAttrs}
+             style="margin-top:12px;border-radius:8px;">
+          <div style="display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;">
+            <button data-action="navigate" data-direction="-1"
+                    style="${btnStyle(false)}">&#8249;</button>
+            <div style="flex:1;min-width:0;">${previewHtml}</div>
+            <button data-action="navigate" data-direction="1"
+                    style="${btnStyle(false)}">&#8250;</button>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:center;
+                      gap:5px;margin-top:8px;flex-wrap:wrap;">
+            ${dotHtml}
+          </div>
+        </div>`;
+    }
+
     const galleryHtml = renderGalleryDisplay(items, displayMode, {
       rows,
       cols,
       bgColor: galleryBgColor,
       pixelStyle: galleryPixelStyle,
       pixelGap: galleryPixelGap,
-      previewSize: galleryPreviewSize,
+      previewSize: effectivePreviewSize,
       ignoreBlackPixels,
       showCards,
       showTitles,
@@ -2892,21 +3940,22 @@ class YeelightCubeGradientCard extends HTMLElement {
       wheelNavPosition: this.config.wheel_nav_position || "bottom",
       wheelHeight: this.config.wheel_height || 300,
       wheelDisplayStyle: showTitles ? "default" : "compact",
-      currentMode,
+      currentMode: null, // never bake the highlight — see comment above
       highlightActive,
     });
 
     return `
-      <div style="margin-top: 12px; 
-      /* padding: 12px; 
-      background: rgba(0,0,0,0.1); */
-       border-radius: 8px;">
+      <div class="gc-preview-shell" ${shellAttrs} style="margin-top: 12px; border-radius: 8px;">
         ${galleryHtml}
       </div>
     `;
   }
 
   async _loadPreviews() {
+    // Preview data is only needed when the mode selector uses a preview style.
+    // Text-style selectors skip the backend preview service entirely.
+    if (!this._isPreviewSelectorActive()) return;
+
     // Ensure event subscription is active before requesting preview data
     if (!this._previewEventListenerRegistered && this._hass) {
       this._setupPreviewEventListener();
@@ -2995,6 +4044,8 @@ class YeelightCubeGradientCard extends HTMLElement {
 
   _setupPreviewEventListener() {
     if (this._previewEventListenerRegistered || !this._hass) return;
+    // No subscription needed when the selector doesn't render previews
+    if (!this._isPreviewSelectorActive()) return;
 
     this._previewEventListenerRegistered = true;
 
@@ -5456,35 +6507,24 @@ ${(() => {
   }
 
   _updateGradientButtons(angle) {
-    // Update gradient buttons with new angle during dragging for immediate visual feedback
+    // Only the "chips" style renders angle-dependent gradient swatches that
+    // need live updates during angle drags.  All other text styles use plain
+    // labels, and preview styles update via the preview pipeline.
+    if (this._getModeSelectorStyle() !== "chips") return;
+
     const textColors = this._getCurrentTextColors();
 
-    // Find "Angle Gradient" buttons and update their background
-    const angleGradButtons = this.shadowRoot.querySelectorAll(
-      '.mode-btn[data-mode="Angle Gradient"], .mode-btn-colorized[data-mode="Angle Gradient"]',
-    );
-    angleGradButtons.forEach((button) => {
-      const gradientColors = this.getModeGradientColors(
-        "Angle Gradient",
-        textColors,
-        angle,
-      );
-      // Use setProperty with important to override CSS
-      button.style.setProperty("background", gradientColors, "important");
-    });
-
-    // Find "Letter Angle Gradient" buttons and update their background
-    const letterAngleButtons = this.shadowRoot.querySelectorAll(
-      '.mode-btn[data-mode="Letter Angle Gradient"], .mode-btn-colorized[data-mode="Letter Angle Gradient"]',
-    );
-    letterAngleButtons.forEach((button) => {
-      const gradientColors = this.getModeGradientColors(
-        "Letter Angle Gradient",
-        textColors,
-        angle,
-      );
-      // Use setProperty with important to override CSS
-      button.style.setProperty("background", gradientColors, "important");
+    // Chips style: live-update the two angle-dependent chip swatches
+    ["Angle Gradient", "Letter Angle Gradient"].forEach((mode) => {
+      this.shadowRoot
+        .querySelectorAll(`.mode-chip[data-mode="${mode}"] .mode-chip-swatch`)
+        .forEach((swatch) => {
+          swatch.style.background = this.getModeGradientColors(
+            mode,
+            textColors,
+            angle,
+          );
+        });
     });
   }
 
@@ -5667,6 +6707,10 @@ ${(() => {
   }
 
   generateColorModeSelector(colorMode, style, textColors, currentAngle) {
+    // Shared appearance axes — identical semantics across every style
+    const selShape = resolveSelectorShape(this.config);
+    const selScale = resolveSelectorTextScale(this.config);
+    const selAttrs = `data-shape="${selShape}"`;
     const modes = [
       { value: "Solid Color", label: "Solid" },
       { value: "Letter Gradient", label: "Letter Grad" },
@@ -5680,103 +6724,40 @@ ${(() => {
     ];
 
     switch (style) {
-      case "colorized":
-        // Custom rendering for Color Seq buttons - inline HTML dots
-        function renderDotGrid(colors) {
-          // Ensure every color appears at least once - use more dots to fill the button
-          let dotColors = [];
-          const numDots = 60; // More dots for better coverage
-          if (colors.length >= numDots) {
-            for (let i = 0; i < numDots; i++)
-              dotColors.push(colors[i % colors.length]);
-          } else {
-            dotColors = colors.slice();
-            let idx = 0;
-            while (dotColors.length < numDots) {
-              dotColors.push(colors[idx % colors.length]);
-              idx++;
-            }
-          }
-          // Shuffle deterministically based on palette
-          for (let i = dotColors.length - 1; i > 0; i--) {
-            const seed = colors.length * 7 + i;
-            const j = seed % (i + 1);
-            [dotColors[i], dotColors[j]] = [dotColors[j], dotColors[i]];
-          }
-
-          // Generate compact grid filling the entire button
-          // 15 columns x 4 rows = 60 dots, tightly packed with no borders
-          let dotsHtml =
-            '<span style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;">';
-
-          // Optimized style: 9.25px dots for best visual balance
-          const dotSize = 9.25;
-          const spacingX = 6;
-          const spacingY = 7.1;
-
-          const buttonWidth = 90;
-          const buttonHeight = 32;
-          const numCols = 15;
-          const numRows = 4;
-
-          // Calculate exact grid height: (rows-1) * spacingY + dotSize
-          // = 3 * 7.1 + 9.25 = 21.3 + 9.25 = 30.55px
-          // Available height = 32px
-          // Center with equal overflow, then adjust UP to balance visually
-          const totalGridWidth = (numCols - 1) * spacingX + dotSize;
-          const totalGridHeight = (numRows - 1) * spacingY + dotSize;
-
-          const offsetX = (buttonWidth - totalGridWidth) / 2;
-          const offsetY = (buttonHeight - totalGridHeight) / 2 - 0.5;
-
-          for (let i = 0; i < numDots; i++) {
-            const col = i % 15;
-            const row = Math.floor(i / 15);
-            const x = col * spacingX + offsetX;
-            const y = row * spacingY + offsetY;
-            dotsHtml += `<span style="position:absolute;left:${x}px;top:${y}px;width:${dotSize}px;height:${dotSize}px;border-radius:50%;background:${dotColors[i]};"></span>`;
-          }
-
-          dotsHtml += "</span>";
-          return { html: dotsHtml };
-        }
-
-        // Get text color preference from config (default: white)
-        const buttonTextColor = this.config.button_text_color || "white";
-        const isWhiteText = buttonTextColor === "white";
-        const textColor = isWhiteText ? "white" : "#222";
-        const textShadow = isWhiteText
-          ? "1px 1px 2px rgba(0,0,0,0.8)"
-          : "1px 1px 2px rgba(255,255,255,0.8)";
-        const dotBgColor = isWhiteText
-          ? "rgba(0,0,0,0.95)"
-          : "rgba(255,255,255,0.95)";
-
+      case "chips":
+        // Chip style: HA-chip-like pills with a live gradient swatch per mode
         return `
-          <div class="color-mode-colorized" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+          <div class="gc-selector color-mode-chips" ${selAttrs} style="--gc-sel-scale:${selScale}; display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
             ${modes
-              .map((mode, index) => {
-                let buttonContent = mode.label;
-                let buttonStyle = `background: ${this.getModeGradientColors(
-                  mode.value,
-                  textColors,
-                  currentAngle,
-                )}; color: ${textColor}; text-shadow: ${textShadow}; position:relative; overflow:hidden; min-width:90px; min-height:32px;`;
-                let dotsHtml = "";
-                if (mode.label.startsWith("Color Seq")) {
-                  const dotGrid = renderDotGrid(textColors.map(rgbToCss));
-                  dotsHtml = dotGrid.html;
-                  buttonStyle = `background: ${dotBgColor}; color: ${textColor}; text-shadow: ${textShadow}; position:relative; overflow:hidden; min-width:90px; min-height:32px;`;
+              .map((mode) => {
+                let swatchBg;
+                if (mode.value === "Text Color Sequence") {
+                  // Conic-gradient \"pie\" with up to 4 colors gives a
+                  // compact multi-color swatch that reflects the randomness
+                  // of the mode — much clearer than vertical stripes.
+                  const stops = textColors.slice(0, 4);
+                  while (stops.length < 4)
+                    stops.push(stops[stops.length - 1] || [200, 200, 200]);
+                  const pct = 100 / stops.length;
+                  swatchBg = `conic-gradient(${stops
+                    .map(
+                      (c, i) =>
+                        `rgb(${c.join(",")}) ${i * pct}% ${(i + 1) * pct}%`,
+                    )
+                    .join(", ")})`;
+                } else {
+                  swatchBg = this.getModeGradientColors(
+                    mode.value,
+                    textColors,
+                    currentAngle,
+                  );
                 }
                 return `
-              <button class="mode-btn-colorized ${
+              <button class="mode-chip ${
                 colorMode === mode.value ? "active" : ""
-              }" 
-                      data-mode="${mode.value}"
-                      title="${mode.label}"
-                      style="${buttonStyle}" tabindex="0">
-                ${dotsHtml}
-                <span style="position:relative;z-index:1;display:inline-block;width:100%;text-align:center;">${buttonContent}</span>
+              }" data-mode="${mode.value}" title="${mode.value}">
+                <span class="mode-chip-swatch" style="background:${swatchBg}"></span>
+                <span class="mode-chip-label">${mode.label}</span>
               </button>
             `;
               })
@@ -5785,7 +6766,7 @@ ${(() => {
 
       case "dropdown":
         return `
-          <div class="color-mode-dropdown" style="margin-bottom: 12px;">
+          <div class="gc-selector color-mode-dropdown" ${selAttrs} style="--gc-sel-scale:${selScale}; margin-bottom: 12px;">
             <select class="mode-select" data-mode-select="true">
               ${modes
                 .map(
@@ -5802,49 +6783,17 @@ ${(() => {
           </div>`;
 
       case "compact":
-        return `
-          <div class="color-mode-compact" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(70px, 1fr)); gap: 3px; margin-bottom: 12px;">
-            ${modes
-              .map(
-                (mode) => `
-              <button class="mode-btn-compact ${
-                colorMode === mode.value ? "active" : ""
-              }" 
-                      data-mode="${mode.value}"
-                      title="${mode.label}">
-                ${mode.label}
-              </button>
-            `,
-              )
-              .join("")}
-          </div>`;
-
       case "pills":
-        return `
-          <div class="color-mode-pills" style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
-            ${modes
-              .map(
-                (mode) => `
-              <button class="mode-btn-pill ${
-                colorMode === mode.value ? "active" : ""
-              }" 
-                      data-mode="${mode.value}"
-                      title="${mode.label}">
-                ${mode.label}
-              </button>
-            `,
-              )
-              .join("")}
-          </div>`;
-
       case "buttons":
+      case "filled":
       default:
+        // Unified "Filled" text style (legacy buttons/pills/compact fall here).
         return `
-          <div class="color-mode-buttons" style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px;">
+          <div class="gc-selector color-mode-filled" ${selAttrs} style="--gc-sel-scale:${selScale}; display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
             ${modes
               .map(
                 (mode) => `
-              <button class="mode-btn ${
+              <button class="mode-btn-filled ${
                 colorMode === mode.value ? "active" : ""
               }" 
                       data-mode="${mode.value}"
@@ -5859,6 +6808,11 @@ ${(() => {
   }
 
   getCardSize() {
+    // Estimate by selector presentation so masonry layout stacks sensibly
+    const style = resolveModeSelectorStyle(this.config || {});
+    if (style === "preview-list" || style === "preview-grid") return 8;
+    if (style === "preview-wheel") return 5;
+    if (style === "preview-carousel") return 4;
     return 4;
   }
 }

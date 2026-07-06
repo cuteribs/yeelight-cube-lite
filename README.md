@@ -338,9 +338,15 @@ Select and configure gradient/color modes. Adjust gradient direction with an ang
 | Feature | Description |
 | :-- | :-- |
 | **Multi-entity support** | Control multiple lamps at the same time |
-| **Mode selector** | Switch between gradient/color modes; apply to whole panel or text only |
-| **Angle selector** | Slider, number input, or rotary control (multiple rotary styles) |
-| **Gradient preview** | Mini matrix previews of each mode with current text, colors, and angle |
+| **Unified mode selector** | One selector, 7 presentation styles: 3 lightweight **text** styles (Filled, Dropdown, Chips with live gradient swatches) or 4 **live preview** styles (List, Grid, Carousel with arrows/dots/swipe, Wheel) that render a mini matrix of every mode with your current text, colors, and angle — click to apply |
+| **Shared appearance axes** | **Shape** (Square / Rounded / Round) and **Size** apply consistently to every selector style — same design language as the other cards |
+| **Selection feedback** | The chosen item pulses while the command is in flight and settles once the lamp confirms |
+| **Active mode label** | Optional chip showing the currently active mode by name (handy when titles are hidden) |
+| **Mode visibility** | Hide modes you never use via per-mode eye toggles (edit mode in the card editor) |
+| **Apply to whole panel** | Independent toggle to apply gradients to the full panel instead of just the text |
+| **Angle selector** | Slider, number input, or rotary control (rectangle, wheel, compass, mini-matrix, capsule) |
+
+> **Upgrading from an older version?** The former "Color Mode Selector" and "Gradient Preview" sections were merged into a single **Mode Selector** — they served the same purpose. Existing configs migrate automatically to the matching preview style; pick a text style in the editor if you prefer the old compact buttons. Text styles skip the preview computation entirely, making them noticeably lighter.
 
 <details>
 <summary>View editor sections</summary>
@@ -348,9 +354,8 @@ Select and configure gradient/color modes. Adjust gradient direction with an ang
 <table>
   <tr>
     <td><img src="https://raw.githubusercontent.com/Max-src/yeelight-cube-lite/main/images/Cards/Gradient-Card-Editor-1.png" alt="Gradient card editor - Global Settings"></td>
-    <td><img src="https://raw.githubusercontent.com/Max-src/yeelight-cube-lite/main/images/Cards/Gradient-Card-Editor-2.png" alt="Gradient card editor - Color Mode Selector"></td>
+    <td><img src="https://raw.githubusercontent.com/Max-src/yeelight-cube-lite/main/images/Cards/Gradient-Card-Editor-2.png" alt="Gradient card editor - Mode Selector"></td>
     <td><img src="https://raw.githubusercontent.com/Max-src/yeelight-cube-lite/main/images/Cards/Gradient-Card-Editor-3.png" alt="Gradient card editor - Angle Selector"></td>
-    <td><img src="https://raw.githubusercontent.com/Max-src/yeelight-cube-lite/main/images/Cards/Gradient-Card-Editor-4.png" alt="Gradient card editor - Gradient Preview"></td>
   </tr>
 </table>
 

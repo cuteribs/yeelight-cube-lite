@@ -31,9 +31,10 @@ class YeelightCubeGradientCardEditor extends LitElement {
     return {
       _config: { type: Object },
       _globalOpen: { type: Boolean },
-      _colorModeOpen: { type: Boolean },
+      _labelOpen: { type: Boolean },
+      _modeOpen: { type: Boolean },
+      _panelOpen: { type: Boolean },
       _angleOpen: { type: Boolean },
-      _previewOpen: { type: Boolean },
     };
   }
 
@@ -41,9 +42,14 @@ class YeelightCubeGradientCardEditor extends LitElement {
     super();
     this._config = {};
     this._globalOpen = false;
-    this._colorModeOpen = false;
+    this._labelOpen = false;
+    this._modeOpen = false;
+    this._panelOpen = false;
     this._angleOpen = false;
-    this._previewOpen = false;
+    // Remember the last style chosen within each family so toggling the
+    // Selector Type back and forth restores the user's previous pick.
+    this._lastTextStyle = "filled";
+    this._lastPreviewStyle = "preview-list";
   }
 
   setConfig(config) {
@@ -90,6 +96,63 @@ class YeelightCubeGradientCardEditor extends LitElement {
       this._config.compass_labels_mode = this._config.compass_show_labels
         ? "under"
         : "none";
+    }
+    // --- Unified mode selector migration -----------------------------------
+    // The old separate "color mode selector" (text buttons) and "gradient
+    // preview" (clickable previews) are now ONE selector with a single
+    // mode_selector_style key.  Legacy configs always showed the preview
+    // section, so they migrate to the matching preview style.
+    if (!this._config.mode_selector_style) {
+      const legacyMap = {
+        inline: "preview-list",
+        grid: "preview-list",
+        gallery: "preview-list",
+        list: "preview-list",
+        compact: "preview-row",
+        wheel: "preview-wheel",
+      };
+      this._config.mode_selector_style =
+        legacyMap[this._config.preview_display_mode] || "preview-list";
+    }
+    // Legacy show_color_mode_selector=false hid the panel toggle too (it
+    // lived inside the text selector block) — preserve that intent.
+    if (
+      this._config.show_color_mode_selector === false &&
+      this._config.show_panel_toggle === undefined
+    ) {
+      this._config.show_panel_toggle = false;
+    }
+    // Drop superseded keys so saved configs stay clean
+    delete this._config.show_color_mode_selector;
+    delete this._config.color_mode_style;
+    delete this._config.preview_display_mode;
+    // Legacy text styles (buttons / pills / compact / colorized) are all
+    // merged into the single "filled" style.
+    if (
+      ["buttons", "pills", "compact", "colorized"].includes(
+        this._config.mode_selector_style,
+      )
+    ) {
+      this._config.mode_selector_style = "filled";
+    }
+    delete this._config.button_text_color;
+    // Migrate removed "preview-row" style to "preview-list"
+    if (this._config.mode_selector_style === "preview-row") {
+      this._config.mode_selector_style = "preview-list";
+    }
+    // Migrate legacy panel toggle styles
+    if (this._config.panel_toggle_style === "default") {
+      this._config.panel_toggle_style = "minimal";
+    }
+    if (this._config.panel_toggle_style === "segmented") {
+      this._config.panel_toggle_style = "tabs";
+    }
+    // Seed the per-family style memory from the loaded config
+    const _style = this._config.mode_selector_style || "preview-list";
+    if (_style.startsWith("preview-")) {
+      this._lastPreviewStyle = _style;
+    } else {
+      this._lastTextStyle = _style;
     }
     // Force a re-render after config is set to avoid template errors
     this.requestUpdate();
@@ -244,12 +307,14 @@ class YeelightCubeGradientCardEditor extends LitElement {
   _toggleSection(section) {
     if (section === "global") {
       this._globalOpen = !this._globalOpen;
-    } else if (section === "colormode") {
-      this._colorModeOpen = !this._colorModeOpen;
+    } else if (section === "label") {
+      this._labelOpen = !this._labelOpen;
+    } else if (section === "mode") {
+      this._modeOpen = !this._modeOpen;
+    } else if (section === "panel") {
+      this._panelOpen = !this._panelOpen;
     } else if (section === "angle") {
       this._angleOpen = !this._angleOpen;
-    } else if (section === "preview") {
-      this._previewOpen = !this._previewOpen;
     }
   }
 
@@ -365,87 +430,511 @@ class YeelightCubeGradientCardEditor extends LitElement {
         </div>
 
         <div
-          class="editor-card${!this._colorModeOpen
-            ? " editor-card-collapsed"
-            : ""}"
+          class="editor-card${!this._labelOpen ? " editor-card-collapsed" : ""}"
         >
           <div
             class="editor-card-header"
-            @click="${() => this._toggleSection("colormode")}"
+            @click="${() => this._toggleSection("label")}"
           >
-            Color Mode Selector ${chevronIcon(!this._colorModeOpen)}
+            Active Mode Label ${chevronIcon(!this._labelOpen)}
           </div>
           <div class="editor-card-content">
             <div class="toggle-row">
-              <label class="toggle-label">Show Color Mode Selector</label>
+              <label class="toggle-label">Show Active Mode Label</label>
               <label class="toggle-switch">
                 <input
-                  id="show_color_mode_selector"
+                  id="show_active_mode_label"
                   type="checkbox"
-                  .checked="${cfg.show_color_mode_selector !== false}"
+                  .checked="${cfg.show_active_mode_label === true}"
                   @change="${this._valueChanged}"
                 />
                 <span class="toggle-slider"></span>
               </label>
             </div>
-            <div class="form-row">
-              <label>Color Mode Selector Style</label>
-              ${createButtonGroup(
-                [
-                  { value: "buttons", label: "Buttons" },
-                  { value: "colorized", label: "Colorized" },
-                  { value: "dropdown", label: "Dropdown" },
-                  { value: "compact", label: "Compact" },
-                  { value: "pills", label: "Pills" },
-                ],
-                cfg.color_mode_style || "buttons",
-                createButtonGroupChangeHandler("color_mode_style", (value) => {
-                  this._config = {
-                    ...this._config,
-                    color_mode_style: value,
-                  };
-                  this._fireConfigChanged();
-                }),
-              )}
+          </div>
+        </div>
+
+        <div
+          class="editor-card${!this._modeOpen ? " editor-card-collapsed" : ""}"
+        >
+          <div
+            class="editor-card-header"
+            @click="${() => this._toggleSection("mode")}"
+          >
+            Mode Selector ${chevronIcon(!this._modeOpen)}
+          </div>
+          <div class="editor-card-content">
+            <div class="toggle-row">
+              <label class="toggle-label">Show Mode Selector</label>
+              <label class="toggle-switch">
+                <input
+                  id="show_mode_selector"
+                  type="checkbox"
+                  .checked="${cfg.show_mode_selector !== false}"
+                  @change="${this._valueChanged}"
+                />
+                <span class="toggle-slider"></span>
+              </label>
             </div>
+
+            <!-- Selector Type: pick the family first, then only that family's
+                 style picker + settings are shown, so the visible options
+                 always match the active selector. -->
             <div class="form-row">
-              <label>Button Text Color</label>
+              <label>Selector Type</label>
               ${createButtonGroup(
                 [
-                  { value: "white", label: "White" },
-                  { value: "black", label: "Black" },
+                  {
+                    value: "text",
+                    label: "Text",
+                    title: "Lightweight buttons — no preview computation",
+                  },
+                  {
+                    value: "preview",
+                    label: "Live Preview",
+                    title:
+                      "Live mini-matrix of every mode with your text, colors and angle",
+                  },
                 ],
-                cfg.button_text_color || "white",
-                createButtonGroupChangeHandler("button_text_color", (value) => {
-                  this._config = {
-                    ...this._config,
-                    button_text_color: value,
-                  };
-                  this._fireConfigChanged();
-                }),
-              )}
-            </div>
-            <div class="form-row">
-              <label>Panel Toggle Style</label>
-              ${createButtonGroup(
-                [
-                  { value: "default", label: "Default" },
-                  { value: "switch", label: "Switch" },
-                  { value: "card", label: "Card" },
-                ],
-                cfg.panel_toggle_style || "default",
-                createButtonGroupChangeHandler(
-                  "panel_toggle_style",
-                  (value) => {
+                (cfg.mode_selector_style || "preview-list").startsWith(
+                  "preview-",
+                )
+                  ? "preview"
+                  : "text",
+                createButtonGroupChangeHandler("__selector_type", (value) => {
+                  const current = this._config.mode_selector_style || "";
+                  const isPreview = current.startsWith("preview-");
+                  // Only switch style when crossing families; preserve the
+                  // last-chosen style within a family where possible.
+                  if (value === "preview" && !isPreview) {
                     this._config = {
                       ...this._config,
-                      panel_toggle_style: value,
+                      mode_selector_style:
+                        this._lastPreviewStyle || "preview-list",
                     };
                     this._fireConfigChanged();
-                  },
-                ),
+                  } else if (value === "text" && isPreview) {
+                    this._config = {
+                      ...this._config,
+                      mode_selector_style: this._lastTextStyle || "filled",
+                    };
+                    this._fireConfigChanged();
+                  }
+                }),
               )}
             </div>
+
+            ${!(cfg.mode_selector_style || "preview-list").startsWith(
+              "preview-",
+            )
+              ? html`
+                  <div class="form-row">
+                    <label>Text Style</label>
+                    ${createButtonGroup(
+                      [
+                        { value: "filled", label: "Filled" },
+                        { value: "dropdown", label: "Dropdown" },
+                        {
+                          value: "chips",
+                          label: "Chips",
+                          title:
+                            "Chips with a live gradient swatch per mode (follows colors + angle)",
+                        },
+                      ],
+                      cfg.mode_selector_style || "filled",
+                      createButtonGroupChangeHandler(
+                        "mode_selector_style",
+                        (value) => {
+                          this._lastTextStyle = value;
+                          this._config = {
+                            ...this._config,
+                            mode_selector_style: value,
+                          };
+                          this._fireConfigChanged();
+                        },
+                      ),
+                    )}
+                  </div>
+                `
+              : html`
+                  <div class="form-row">
+                    <label>Preview Style</label>
+                    ${createButtonGroup(
+                      [
+                        {
+                          value: "preview-list",
+                          label: "List",
+                          title: "Responsive list of live mode previews",
+                        },
+                        {
+                          value: "preview-grid",
+                          label: "Grid",
+                          title: "Fixed two-column grid of live mode previews",
+                        },
+                        {
+                          value: "preview-carousel",
+                          label: "Carousel",
+                          title:
+                            "One preview at a time with arrows, dots and swipe navigation",
+                        },
+                        {
+                          value: "preview-wheel",
+                          label: "Wheel",
+                          title: "iOS-style rotating picker with live previews",
+                        },
+                      ],
+                      cfg.mode_selector_style || "preview-list",
+                      createButtonGroupChangeHandler(
+                        "mode_selector_style",
+                        (value) => {
+                          this._lastPreviewStyle = value;
+                          this._config = {
+                            ...this._config,
+                            mode_selector_style: value,
+                          };
+                          this._fireConfigChanged();
+                        },
+                      ),
+                    )}
+                  </div>
+                `}
+
+            <!-- Shared appearance axes: apply to EVERY selector style -->
+            <div class="form-row">
+              <label>Shape</label>
+              ${createButtonGroup(
+                [
+                  { value: "square", label: "Square" },
+                  { value: "rounded", label: "Rounded" },
+                  { value: "round", label: "Round" },
+                ],
+                cfg.selector_shape || "rounded",
+                createButtonGroupChangeHandler("selector_shape", (value) => {
+                  this._config = { ...this._config, selector_shape: value };
+                  this._fireConfigChanged();
+                }),
+              )}
+            </div>
+            ${createSliderRow(
+              "Size",
+              cfg.gallery_preview_size || 50,
+              { min: 50, max: 100, step: 1 },
+              (e) => {
+                this._config = {
+                  ...this._config,
+                  gallery_preview_size: e.target.value,
+                };
+                this._fireConfigChanged();
+              },
+              "%",
+            )}
+            ${(cfg.mode_selector_style || "preview-list").startsWith("preview-")
+              ? html`
+                  <div class="toggle-row">
+                    <label class="toggle-label">Mode Visibility</label>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      ${this._hasGradientModeVisibilityChanges()
+                        ? html`
+                            <button
+                              type="button"
+                              @click="${this._resetGradientModeVisibility}"
+                              style="padding:4px 10px;border:1px solid var(--divider-color, #ddd);border-radius:4px;background:var(--secondary-background-color, #f5f5f5);color:var(--secondary-text-color, #666);cursor:pointer;font-size:0.8em;white-space:nowrap;"
+                              title="Show all modes (reset visibility to all visible)"
+                            >
+                              👁 Reset
+                            </button>
+                          `
+                        : ""}
+                      <label class="toggle-switch">
+                        <input
+                          type="checkbox"
+                          id="edit_gradient_modes"
+                          .checked="${this._config.edit_gradient_modes ??
+                          false}"
+                          @change="${(e) => {
+                            this._config = {
+                              ...this._config,
+                              edit_gradient_modes: e.target.checked,
+                            };
+                            this._fireConfigChanged();
+                          }}"
+                        />
+                        <span class="toggle-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div
+                    style="font-size:0.85em;color:var(--secondary-text-color, #666);margin-top:2px;margin-bottom:8px;"
+                  >
+                    Enable mode editing: show/hide toggles appear on each
+                    gradient preview. Toggle visibility by clicking the eye icon
+                    (👁) on each mode.
+                  </div>
+
+                  ${cfg.mode_selector_style === "preview-wheel"
+                    ? renderModeSettingsSection(
+                        "Wheel Mode Settings",
+                        html`
+                          <div class="form-row">
+                            <label>Wheel Navigation Position</label>
+                            ${createButtonGroup(
+                              [
+                                {
+                                  value: "none",
+                                  label: "None",
+                                  title: "Hide navigation buttons",
+                                },
+                                {
+                                  value: "bottom",
+                                  label: "Bottom",
+                                  title: "Buttons at bottom center",
+                                },
+                                {
+                                  value: "sides",
+                                  label: "Sides",
+                                  title: "Buttons on left/right of center item",
+                                },
+                              ],
+                              cfg.wheel_nav_position || "bottom",
+                              createButtonGroupChangeHandler(
+                                "wheel_nav_position",
+                                (value) => {
+                                  this._config = {
+                                    ...this._config,
+                                    wheel_nav_position: value,
+                                  };
+                                  this._fireConfigChanged();
+                                },
+                              ),
+                            )}
+                          </div>
+                          <div class="form-row">
+                            <label>Wheel Height</label>
+                            <div
+                              style="display: flex; align-items: center; gap: 8px;"
+                            >
+                              <input
+                                id="wheel_height"
+                                type="range"
+                                min="65"
+                                max="400"
+                                step="10"
+                                .value="${cfg.wheel_height || 300}"
+                                @input="${this._valueChanged}"
+                                style="flex: 1;"
+                              />
+                              <span
+                                style="min-width: 45px; text-align: right; font-size: 0.9em; color: var(--secondary-text-color, #666);"
+                              >
+                                ${cfg.wheel_height || 300}px
+                              </span>
+                            </div>
+                          </div>
+                        `,
+                      )
+                    : ""}
+
+                  <div class="form-row">
+                    <label>Preview Background Color</label>
+                    <div style="display: flex; flex-direction: column;">
+                      <div>
+                        ${createButtonGroup(
+                          [
+                            {
+                              value: "transparent",
+                              label: "Transparent",
+                              title: "Transparent Background",
+                            },
+                            {
+                              value: "white",
+                              label: "White",
+                              title: "White Background",
+                            },
+                            {
+                              value: "black",
+                              label: "Black",
+                              title: "Black Background",
+                            },
+                          ],
+                          cfg.gallery_background_color || "black",
+                          createButtonGroupChangeHandler(
+                            "gallery_background_color",
+                            (value) => {
+                              this._config = {
+                                ...this._config,
+                                gallery_background_color: value,
+                              };
+                              this._fireConfigChanged();
+                            },
+                          ),
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  ${(cfg.gallery_background_color || "black") !== "black"
+                    ? createToggleRow(
+                        "Ignore Black Pixels",
+                        "gallery_ignore_black_pixels",
+                        cfg.gallery_ignore_black_pixels === true,
+                        (e) => this._valueChanged(e),
+                      )
+                    : ""}
+
+                  <div class="form-row">
+                    <label>Preview Pixel Style</label>
+                    <div style="display: flex; flex-direction: column;">
+                      <div>
+                        ${createButtonGroup(
+                          [
+                            {
+                              value: "square",
+                              label: "Square",
+                              title: "Square Pixels",
+                            },
+                            {
+                              value: "rounded",
+                              label: "Rounded",
+                              title: "Rounded Pixels",
+                            },
+                            {
+                              value: "circle",
+                              label: "Circle",
+                              title: "Circular Pixels",
+                            },
+                          ],
+                          cfg.gallery_pixel_style || "square",
+                          createButtonGroupChangeHandler(
+                            "gallery_pixel_style",
+                            (value) => {
+                              this._config = {
+                                ...this._config,
+                                gallery_pixel_style: value,
+                              };
+                              this._fireConfigChanged();
+                            },
+                          ),
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-row">
+                    <label>Pixel Spacing</label>
+                    ${createButtonGroup(
+                      [
+                        { value: "none", label: "None" },
+                        { value: "subtle", label: "Subtle" },
+                        { value: "normal", label: "Normal" },
+                      ],
+                      cfg.gallery_spacing_mode || "normal",
+                      createButtonGroupChangeHandler(
+                        "gallery_spacing_mode",
+                        (value) => {
+                          this._config = {
+                            ...this._config,
+                            gallery_spacing_mode: value,
+                          };
+                          this._fireConfigChanged();
+                        },
+                      ),
+                    )}
+                  </div>
+                  ${createToggleRow(
+                    "Matrix Box Shadow",
+                    "gallery_matrix_box_shadow",
+                    cfg.gallery_matrix_box_shadow === true,
+                    (e) => this._valueChanged(e),
+                  )}
+                  ${createToggleRow(
+                    "Show Titles",
+                    "preview_show_titles",
+                    cfg.preview_show_titles !== false,
+                    (e) => this._valueChanged(e),
+                  )}
+                  ${cfg.mode_selector_style !== "preview-carousel"
+                    ? createToggleRow(
+                        "Highlight Active Mode",
+                        "highlight_active_mode",
+                        cfg.highlight_active_mode !== false,
+                        (e) => this._valueChanged(e),
+                      )
+                    : ""}
+                `
+              : ""}
+          </div>
+        </div>
+
+        <div
+          class="editor-card${!this._panelOpen ? " editor-card-collapsed" : ""}"
+        >
+          <div
+            class="editor-card-header"
+            @click="${() => this._toggleSection("panel")}"
+          >
+            Apply to Whole Panel ${chevronIcon(!this._panelOpen)}
+          </div>
+          <div class="editor-card-content">
+            <div class="toggle-row">
+              <label class="toggle-label">Show "Apply to Whole Panel"</label>
+              <label class="toggle-switch">
+                <input
+                  id="show_panel_toggle"
+                  type="checkbox"
+                  .checked="${cfg.show_panel_toggle !== false}"
+                  @change="${this._valueChanged}"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            ${cfg.show_panel_toggle !== false
+              ? html`
+                  <div class="form-row">
+                    <label>Panel Toggle Style</label>
+                    ${createButtonGroup(
+                      [
+                        { value: "minimal", label: "Minimal" },
+                        { value: "switch", label: "Switch" },
+                        { value: "card", label: "Card" },
+                        { value: "tabs", label: "Tabs" },
+                        { value: "chip", label: "Chip" },
+                      ],
+                      cfg.panel_toggle_style || "minimal",
+                      createButtonGroupChangeHandler(
+                        "panel_toggle_style",
+                        (value) => {
+                          this._config = {
+                            ...this._config,
+                            panel_toggle_style: value,
+                          };
+                          this._fireConfigChanged();
+                        },
+                      ),
+                    )}
+                  </div>
+                  <div class="form-row">
+                    <label>Toggle Shape</label>
+                    ${createButtonGroup(
+                      [
+                        { value: "square", label: "Square" },
+                        { value: "rounded", label: "Rounded" },
+                        { value: "round", label: "Round" },
+                      ],
+                      cfg.panel_toggle_shape || "round",
+                      createButtonGroupChangeHandler(
+                        "panel_toggle_shape",
+                        (value) => {
+                          this._config = {
+                            ...this._config,
+                            panel_toggle_shape: value,
+                          };
+                          this._fireConfigChanged();
+                        },
+                      ),
+                    )}
+                  </div>
+                `
+              : ""}
           </div>
         </div>
 
@@ -1048,308 +1537,6 @@ class YeelightCubeGradientCardEditor extends LitElement {
                   `,
                 )
               : ""}
-          </div>
-        </div>
-        <div
-          class="editor-card${!this._previewOpen
-            ? " editor-card-collapsed"
-            : ""}"
-        >
-          <div
-            class="editor-card-header"
-            @click="${() => this._toggleSection("preview")}"
-          >
-            Gradient Preview ${chevronIcon(!this._previewOpen)}
-          </div>
-          <div class="editor-card-content">
-            <div class="toggle-row">
-              <label class="toggle-label">Mode Visibility</label>
-              <div style="display:flex;align-items:center;gap:8px;">
-                ${this._hasGradientModeVisibilityChanges()
-                  ? html`
-                      <button
-                        type="button"
-                        @click="${this._resetGradientModeVisibility}"
-                        style="padding:4px 10px;border:1px solid var(--divider-color, #ddd);border-radius:4px;background:var(--secondary-background-color, #f5f5f5);color:var(--secondary-text-color, #666);cursor:pointer;font-size:0.8em;white-space:nowrap;"
-                        title="Show all modes (reset visibility to all visible)"
-                      >
-                        👁 Reset
-                      </button>
-                    `
-                  : ""}
-                <label class="toggle-switch">
-                  <input
-                    type="checkbox"
-                    id="edit_gradient_modes"
-                    .checked="${this._config.edit_gradient_modes ?? false}"
-                    @change="${(e) => {
-                      this._config = {
-                        ...this._config,
-                        edit_gradient_modes: e.target.checked,
-                      };
-                      this._fireConfigChanged();
-                    }}"
-                  />
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-            </div>
-            <div
-              style="font-size:0.85em;color:var(--secondary-text-color, #666);margin-top:2px;margin-bottom:8px;"
-            >
-              Enable mode editing: show/hide toggles appear on each gradient
-              preview. Toggle visibility by clicking the eye icon (👁) on each
-              mode.
-            </div>
-
-            <!-- 1. Preview Display Mode (container layout choice) -->
-            <div class="form-row">
-              <label>Preview Display Mode</label>
-              <div style="display: flex; flex-direction: column;">
-                <div>
-                  ${createButtonGroup(
-                    [
-                      {
-                        value: "list",
-                        label: "List",
-                        title: "Responsive list layout",
-                      },
-                      {
-                        value: "compact",
-                        label: "Compact",
-                        title: "Horizontal inline list",
-                      },
-                      {
-                        value: "wheel",
-                        label: "Wheel",
-                        title: "iOS-style rotating picker",
-                      },
-                    ],
-                    { inline: "list", grid: "list", gallery: "list" }[
-                      cfg.preview_display_mode
-                    ] ||
-                      cfg.preview_display_mode ||
-                      "list",
-                    createButtonGroupChangeHandler(
-                      "preview_display_mode",
-                      (value) => {
-                        this._config = {
-                          ...this._config,
-                          preview_display_mode: value,
-                        };
-                        this._fireConfigChanged();
-                      },
-                    ),
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <!-- 2. Conditional mode settings (right after Display Mode) -->
-            ${cfg.preview_display_mode === "wheel"
-              ? renderModeSettingsSection(
-                  "Wheel Mode Settings",
-                  html`
-                    <div class="form-row">
-                      <label>Wheel Navigation Position</label>
-                      ${createButtonGroup(
-                        [
-                          {
-                            value: "none",
-                            label: "None",
-                            title: "Hide navigation buttons",
-                          },
-                          {
-                            value: "bottom",
-                            label: "Bottom",
-                            title: "Buttons at bottom center",
-                          },
-                          {
-                            value: "sides",
-                            label: "Sides",
-                            title: "Buttons on left/right of center item",
-                          },
-                        ],
-                        cfg.wheel_nav_position || "bottom",
-                        createButtonGroupChangeHandler(
-                          "wheel_nav_position",
-                          (value) => {
-                            this._config = {
-                              ...this._config,
-                              wheel_nav_position: value,
-                            };
-                            this._fireConfigChanged();
-                          },
-                        ),
-                      )}
-                    </div>
-                    <div class="form-row">
-                      <label>Wheel Height</label>
-                      <div
-                        style="display: flex; align-items: center; gap: 8px;"
-                      >
-                        <input
-                          id="wheel_height"
-                          type="range"
-                          min="65"
-                          max="400"
-                          step="10"
-                          .value="${cfg.wheel_height || 300}"
-                          @input="${this._valueChanged}"
-                          style="flex: 1;"
-                        />
-                        <span
-                          style="min-width: 45px; text-align: right; font-size: 0.9em; color: var(--secondary-text-color, #666);"
-                        >
-                          ${cfg.wheel_height || 300}px
-                        </span>
-                      </div>
-                    </div>
-                  `,
-                )
-              : ""}
-
-            <!-- 3. Gallery appearance settings -->
-            ${createSliderRow(
-              "Gallery Preview Size",
-              cfg.gallery_preview_size || 50,
-              { min: 50, max: 100, step: 1 },
-              (e) => {
-                this._config = {
-                  ...this._config,
-                  gallery_preview_size: e.target.value,
-                };
-                this._fireConfigChanged();
-              },
-              "%",
-            )}
-
-            <div class="form-row">
-              <label>Preview Background Color</label>
-              <div style="display: flex; flex-direction: column;">
-                <div>
-                  ${createButtonGroup(
-                    [
-                      {
-                        value: "transparent",
-                        label: "Transparent",
-                        title: "Transparent Background",
-                      },
-                      {
-                        value: "white",
-                        label: "White",
-                        title: "White Background",
-                      },
-                      {
-                        value: "black",
-                        label: "Black",
-                        title: "Black Background",
-                      },
-                    ],
-                    cfg.gallery_background_color || "black",
-                    createButtonGroupChangeHandler(
-                      "gallery_background_color",
-                      (value) => {
-                        this._config = {
-                          ...this._config,
-                          gallery_background_color: value,
-                        };
-                        this._fireConfigChanged();
-                      },
-                    ),
-                  )}
-                </div>
-              </div>
-            </div>
-
-            ${(cfg.gallery_background_color || "black") !== "black"
-              ? createToggleRow(
-                  "Ignore Black Pixels",
-                  "gallery_ignore_black_pixels",
-                  cfg.gallery_ignore_black_pixels === true,
-                  (e) => this._valueChanged(e),
-                )
-              : ""}
-
-            <div class="form-row">
-              <label>Gallery Pixel Style</label>
-              <div style="display: flex; flex-direction: column;">
-                <div>
-                  ${createButtonGroup(
-                    [
-                      {
-                        value: "square",
-                        label: "Square",
-                        title: "Square Pixels",
-                      },
-                      {
-                        value: "rounded",
-                        label: "Rounded",
-                        title: "Rounded Pixels",
-                      },
-                      {
-                        value: "circle",
-                        label: "Circle",
-                        title: "Circular Pixels",
-                      },
-                    ],
-                    cfg.gallery_pixel_style || "square",
-                    createButtonGroupChangeHandler(
-                      "gallery_pixel_style",
-                      (value) => {
-                        this._config = {
-                          ...this._config,
-                          gallery_pixel_style: value,
-                        };
-                        this._fireConfigChanged();
-                      },
-                    ),
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Pixel Spacing</label>
-              ${createButtonGroup(
-                [
-                  { value: "none", label: "None" },
-                  { value: "subtle", label: "Subtle" },
-                  { value: "normal", label: "Normal" },
-                ],
-                cfg.gallery_spacing_mode || "normal",
-                createButtonGroupChangeHandler(
-                  "gallery_spacing_mode",
-                  (value) => {
-                    this._config = {
-                      ...this._config,
-                      gallery_spacing_mode: value,
-                    };
-                    this._fireConfigChanged();
-                  },
-                ),
-              )}
-            </div>
-            ${createToggleRow(
-              "Matrix Box Shadow",
-              "gallery_matrix_box_shadow",
-              cfg.gallery_matrix_box_shadow === true,
-              (e) => this._valueChanged(e),
-            )}
-
-            <!-- 4. Content & Labels -->
-            ${createToggleRow(
-              "Show Titles",
-              "preview_show_titles",
-              cfg.preview_show_titles !== false,
-              (e) => this._valueChanged(e),
-            )}
-            ${createToggleRow(
-              "Highlight Active Mode",
-              "highlight_active_mode",
-              cfg.highlight_active_mode !== false,
-              (e) => this._valueChanged(e),
-            )}
           </div>
         </div>
       </div>

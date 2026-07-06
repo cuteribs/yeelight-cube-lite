@@ -1029,6 +1029,9 @@ export const galleryDisplayStyles = `
 
   /* ========================================
      ACTIVE MODE HIGHLIGHT STYLES
+     — Drawn INSET (negative outline-offset / inset box-shadow) so the ring
+       renders inside the element and can never be clipped by container or
+       ha-card overflow, even for full-width items.
      — Only border / outline / shadow — never override background
        so the user's chosen Preview Background Color is preserved.
      ======================================== */
@@ -1036,13 +1039,13 @@ export const galleryDisplayStyles = `
   /* Gallery / Grid / List mode: card style */
   .gallery-item-card[data-active-mode="true"] {
     border-color: var(--primary-color, #03a9f4) !important;
-    box-shadow: 0 0 0 1px var(--primary-color, #03a9f4), 0 2px 8px rgba(3, 169, 244, 0.25) !important;
+    box-shadow: inset 0 0 0 1px var(--primary-color, #03a9f4) !important;
   }
 
   /* Gallery / Grid / List mode: plain (no-card) style */
   .gallery-item-plain[data-active-mode="true"] {
     outline: 2px solid var(--primary-color, #03a9f4);
-    outline-offset: 2px;
+    outline-offset: -2px;
     border-radius: 8px;
   }
 
@@ -1060,7 +1063,7 @@ export const galleryDisplayStyles = `
   /* Compact mode */
   .gallery-compact-item[data-active-mode="true"] {
     border-color: var(--primary-color, #03a9f4) !important;
-    box-shadow: 0 0 0 1px var(--primary-color, #03a9f4), 0 2px 8px rgba(3, 169, 244, 0.25) !important;
+    box-shadow: inset 0 0 0 1px var(--primary-color, #03a9f4) !important;
   }
 
   /* Wheel mode: highlight the active mode item (complements data-wheel-centered) */
