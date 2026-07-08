@@ -427,14 +427,6 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                 ),
               )}
             </div>
-            ${createSliderRow(
-              "Slider Thickness",
-              cfg.brightness_slider_thickness ??
-                ({ thick: 12, thin: 3 }[cfg.brightness_slider_appearance] || 6),
-              { min: 2, max: 10, step: 1 },
-              (e) => this._onSliderChange("brightness_slider_thickness", e),
-              "px",
-            )}
             ${cfg.brightness_slider_style === "capsule"
               ? renderModeSettingsSection(
                   "Capsule Settings",
@@ -512,6 +504,14 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                   `,
                 )
               : ""}
+            ${createSliderRow(
+              "Slider Thickness",
+              cfg.brightness_slider_thickness ??
+                ({ thick: 12, thin: 3 }[cfg.brightness_slider_appearance] || 6),
+              { min: 2, max: 10, step: 1 },
+              (e) => this._onSliderChange("brightness_slider_thickness", e),
+              "px",
+            )}
             <div class="form-row">
               <label>Brightness Theme</label>
               ${createButtonGroup(

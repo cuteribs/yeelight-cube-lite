@@ -3883,7 +3883,7 @@ class YeelightCubeGradientCard extends HTMLElement {
             buttonShape: gcCarouselButtonShape,
             showAsCard: true,
             carouselId: "gc-gradient-carousel",
-            wrapNavigation: false,
+            wrapNavigation: this.config.gallery_wrap_navigation === true,
             renderItemString: (it) => `
               <div class="gallery-item gc-carousel-item" data-mode="${it.dataMode}"
                    data-action="select-mode"

@@ -403,7 +403,7 @@ export class EditorConfigManager {
 export function renderModeSettingsSection(title, content) {
   return html`
     <div
-      style="margin-top: 20px; padding: 16px; background: color-mix(in srgb, var(--primary-color, #1976d2) 10%, var(--card-background-color, #fff)); border-radius: 8px; border-left: 4px solid var(--primary-color, #0077cc);"
+      style="margin-top: 16px; margin-bottom: 16px; padding: 16px; background: color-mix(in srgb, var(--primary-color, #1976d2) 10%, var(--card-background-color, #fff)); border-radius: 8px; border-left: 4px solid var(--primary-color, #0077cc);"
     >
       <div
         style="font-weight: 600; font-size: 1.05em; margin-bottom: 12px; color: var(--primary-color, #0077cc);"

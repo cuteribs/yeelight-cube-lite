@@ -624,6 +624,104 @@ class YeelightCubeGradientCardEditor extends LitElement {
                   </div>
                 `}
 
+            <!-- Mode-specific settings: shown immediately after the style
+                 picker so the conditional block sits right next to the option
+                 that triggers it. -->
+            ${(cfg.mode_selector_style || "preview-list").startsWith("preview-")
+              ? cfg.mode_selector_style === "preview-wheel"
+                ? renderModeSettingsSection(
+                    "Wheel Mode Settings",
+                    html`
+                      <div class="form-row">
+                        <label>Wheel Navigation Position</label>
+                        ${createButtonGroup(
+                          [
+                            {
+                              value: "none",
+                              label: "None",
+                              title: "Hide navigation buttons",
+                            },
+                            {
+                              value: "bottom",
+                              label: "Bottom",
+                              title: "Buttons at bottom center",
+                            },
+                            {
+                              value: "sides",
+                              label: "Sides",
+                              title: "Buttons on left/right of center item",
+                            },
+                          ],
+                          cfg.wheel_nav_position || "bottom",
+                          createButtonGroupChangeHandler(
+                            "wheel_nav_position",
+                            (value) => {
+                              this._config = {
+                                ...this._config,
+                                wheel_nav_position: value,
+                              };
+                              this._fireConfigChanged();
+                            },
+                          ),
+                        )}
+                      </div>
+                      <div class="form-row">
+                        <label>Wheel Height</label>
+                        <div
+                          style="display: flex; align-items: center; gap: 8px;"
+                        >
+                          <input
+                            id="wheel_height"
+                            type="range"
+                            min="65"
+                            max="400"
+                            step="10"
+                            .value="${cfg.wheel_height || 300}"
+                            @input="${this._valueChanged}"
+                            style="flex: 1;"
+                          />
+                          <span
+                            style="min-width: 45px; text-align: right; font-size: 0.9em; color: var(--secondary-text-color, #666);"
+                          >
+                            ${cfg.wheel_height || 300}px
+                          </span>
+                        </div>
+                      </div>
+                      ${createToggleRow(
+                        "Highlight Active Mode",
+                        "highlight_active_mode",
+                        cfg.highlight_active_mode !== false,
+                        (e) => this._valueChanged(e),
+                      )}
+                    `,
+                  )
+                : cfg.mode_selector_style === "preview-carousel"
+                  ? renderModeSettingsSection(
+                      "Carousel Mode Settings",
+                      html`
+                        ${createToggleRow(
+                          "Wrap Navigation (Infinite Loop)",
+                          "gallery_wrap_navigation",
+                          cfg.gallery_wrap_navigation === true,
+                          (e) => this._valueChanged(e),
+                        )}
+                      `,
+                    )
+                  : renderModeSettingsSection(
+                      cfg.mode_selector_style === "preview-grid"
+                        ? "Grid Mode Settings"
+                        : "List Mode Settings",
+                      html`
+                        ${createToggleRow(
+                          "Highlight Active Mode",
+                          "highlight_active_mode",
+                          cfg.highlight_active_mode !== false,
+                          (e) => this._valueChanged(e),
+                        )}
+                      `,
+                    )
+              : ""}
+
             <!-- Shared appearance axes: apply to EVERY selector style -->
             <div class="form-row">
               <label>Shape</label>
@@ -695,69 +793,6 @@ class YeelightCubeGradientCardEditor extends LitElement {
                     gradient preview. Toggle visibility by clicking the eye icon
                     (👁) on each mode.
                   </div>
-
-                  ${cfg.mode_selector_style === "preview-wheel"
-                    ? renderModeSettingsSection(
-                        "Wheel Mode Settings",
-                        html`
-                          <div class="form-row">
-                            <label>Wheel Navigation Position</label>
-                            ${createButtonGroup(
-                              [
-                                {
-                                  value: "none",
-                                  label: "None",
-                                  title: "Hide navigation buttons",
-                                },
-                                {
-                                  value: "bottom",
-                                  label: "Bottom",
-                                  title: "Buttons at bottom center",
-                                },
-                                {
-                                  value: "sides",
-                                  label: "Sides",
-                                  title: "Buttons on left/right of center item",
-                                },
-                              ],
-                              cfg.wheel_nav_position || "bottom",
-                              createButtonGroupChangeHandler(
-                                "wheel_nav_position",
-                                (value) => {
-                                  this._config = {
-                                    ...this._config,
-                                    wheel_nav_position: value,
-                                  };
-                                  this._fireConfigChanged();
-                                },
-                              ),
-                            )}
-                          </div>
-                          <div class="form-row">
-                            <label>Wheel Height</label>
-                            <div
-                              style="display: flex; align-items: center; gap: 8px;"
-                            >
-                              <input
-                                id="wheel_height"
-                                type="range"
-                                min="65"
-                                max="400"
-                                step="10"
-                                .value="${cfg.wheel_height || 300}"
-                                @input="${this._valueChanged}"
-                                style="flex: 1;"
-                              />
-                              <span
-                                style="min-width: 45px; text-align: right; font-size: 0.9em; color: var(--secondary-text-color, #666);"
-                              >
-                                ${cfg.wheel_height || 300}px
-                              </span>
-                            </div>
-                          </div>
-                        `,
-                      )
-                    : ""}
 
                   <div class="form-row">
                     <label>Preview Background Color</label>
@@ -877,14 +912,6 @@ class YeelightCubeGradientCardEditor extends LitElement {
                     cfg.preview_show_titles !== false,
                     (e) => this._valueChanged(e),
                   )}
-                  ${cfg.mode_selector_style !== "preview-carousel"
-                    ? createToggleRow(
-                        "Highlight Active Mode",
-                        "highlight_active_mode",
-                        cfg.highlight_active_mode !== false,
-                        (e) => this._valueChanged(e),
-                      )
-                    : ""}
                 `
               : ""}
           </div>

@@ -231,27 +231,41 @@ class YeelightCubePaletteCardEditor extends LitElement {
                     )}
                   `,
                 )
-              : ""}
-            ${config.display_mode === "album"
-              ? renderModeSettingsSection(
-                  "Album Mode Settings",
-                  html`
-                    ${createToggleRow(
-                      "3D Effect (Perspective)",
-                      "album_3d_effect",
-                      config.album_3d_effect !== false,
-                      (e) => this._onSwitchChange(e, "album_3d_effect"),
-                    )}
-                  `,
-                )
-              : config.display_mode === "compact"
+              : config.display_mode === "album"
                 ? renderModeSettingsSection(
-                    "Compact Mode Settings",
-                    renderModeInfoMessage(
-                      "No additional compact mode settings available.",
-                    ),
+                    "Album Mode Settings",
+                    html`
+                      ${createToggleRow(
+                        "3D Effect (Perspective)",
+                        "album_3d_effect",
+                        config.album_3d_effect !== false,
+                        (e) => this._onSwitchChange(e, "album_3d_effect"),
+                      )}
+                    `,
                   )
-                : ""}
+                : config.display_mode === "compact"
+                  ? renderModeSettingsSection(
+                      "Compact Mode Settings",
+                      renderModeInfoMessage(
+                        "No additional compact mode settings available.",
+                      ),
+                    )
+                  : config.display_mode === "list" ||
+                      config.display_mode === "gallery"
+                    ? renderModeSettingsSection(
+                        config.display_mode === "gallery"
+                          ? "Gallery Mode Settings"
+                          : "List Mode Settings",
+                        html`
+                          ${createSliderRow(
+                            "Items Per Page (0 = no pagination)",
+                            config.items_per_page || 0,
+                            { min: 0, max: 50, step: 1 },
+                            (e) => this._onSliderChange("items_per_page", e),
+                          )}
+                        `,
+                      )
+                    : ""}
 
             <!-- 3. Card container settings -->
             ${createSliderRow(
@@ -289,18 +303,7 @@ class YeelightCubePaletteCardEditor extends LitElement {
               )}
             </div>
 
-            <!-- 4. Pagination (conditional: list/gallery modes) -->
-            ${config.display_mode === "list" ||
-            config.display_mode === "gallery"
-              ? createSliderRow(
-                  "Items Per Page (0 = no pagination)",
-                  config.items_per_page || 0,
-                  { min: 0, max: 50, step: 1 },
-                  (e) => this._onSliderChange("items_per_page", e),
-                )
-              : ""}
-
-            <!-- 5. Content settings (inside cards) -->
+            <!-- 4. Content settings (inside cards) -->
             <div class="form-row">
               <label>Swatch Style</label>
               ${createButtonGroup(

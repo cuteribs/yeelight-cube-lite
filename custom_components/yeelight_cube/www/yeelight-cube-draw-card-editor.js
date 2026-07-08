@@ -1300,7 +1300,19 @@ class YeelightCubeDrawCardEditor extends LitElement {
                         )}
                       `,
                     )
-                  : ""}
+                  : renderModeSettingsSection(
+                      this.config.pixel_art_gallery_mode === "list"
+                        ? "List Mode Settings"
+                        : "Grid Mode Settings",
+                      html`
+                        ${createSliderRow(
+                          "Items Per Page",
+                          this.config.pixel_art_items_per_page || 12,
+                          { min: 1, max: 50, step: 1 },
+                          this._onItemsPerPageChange.bind(this),
+                        )}
+                      `,
+                    )}
 
             <!-- 4. Card container settings -->
             ${createSliderRow(
@@ -1335,19 +1347,7 @@ class YeelightCubeDrawCardEditor extends LitElement {
               )}
             </div>
 
-            <!-- 5. Pagination (conditional: gallery/list modes) -->
-            ${(this.config.pixel_art_gallery_mode || "grid") !== "carousel" &&
-            this.config.pixel_art_gallery_mode !== "album" &&
-            this.config.pixel_art_gallery_mode !== "compact"
-              ? createSliderRow(
-                  "Items Per Page",
-                  this.config.pixel_art_items_per_page || 12,
-                  { min: 1, max: 50, step: 1 },
-                  this._onItemsPerPageChange.bind(this),
-                )
-              : ""}
-
-            <!-- 6. Gallery appearance -->
+            <!-- 5. Gallery appearance -->
             ${createSliderRow(
               "Gallery Preview Size",
               this.config.pixel_art_preview_size || 100,
