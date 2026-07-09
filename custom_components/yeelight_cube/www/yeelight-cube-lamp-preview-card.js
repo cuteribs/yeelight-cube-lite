@@ -573,6 +573,19 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     document.addEventListener("touchend", handleEnd);
   }
 
+  handleRotaryStep(delta) {
+    // Find whichever brightness input is currently rendered (all modes give it .brightness-slider;
+    // capsule mode uses .capsule-input from the shared capsule utility)
+    const input =
+      this.shadowRoot?.querySelector(".brightness-slider") ||
+      this.shadowRoot?.querySelector(".capsule-input");
+    if (!input) return;
+    const cur = parseInt(input.value) || 1;
+    const newVal = Math.max(1, Math.min(100, cur + delta));
+    input.value = newVal;
+    this.handleBrightnessChange({ target: { value: newVal } });
+  }
+
   // ===== Preset wheel handlers =====
   _getWheelStops() {
     const step = Math.max(
@@ -831,6 +844,13 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       const knobArm = this.shadowRoot?.querySelector(".rotary-knob-arm");
       if (knobArm)
         knobArm.style.setProperty("--knob-angle", `${225 + angle}deg`);
+      // Dial style: move the SVG circle knob to the arc tip
+      const dialKnob = this.shadowRoot?.querySelector(".rotary-dial-knob");
+      if (dialKnob) {
+        const rad = (angle * Math.PI) / 180;
+        dialKnob.setAttribute("cx", (50 + 40 * Math.cos(rad)).toFixed(2));
+        dialKnob.setAttribute("cy", (50 + 40 * Math.sin(rad)).toFixed(2));
+      }
 
       if (showPercentage) {
         const rotaryValue = this.shadowRoot?.querySelector(".rotary-value");
@@ -2258,6 +2278,12 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         const knobArm = this.shadowRoot?.querySelector(".rotary-knob-arm");
         if (knobArm)
           knobArm.style.setProperty("--knob-angle", `${225 + angle}deg`);
+        const dialKnob = this.shadowRoot?.querySelector(".rotary-dial-knob");
+        if (dialKnob) {
+          const rad = (angle * Math.PI) / 180;
+          dialKnob.setAttribute("cx", (50 + 40 * Math.cos(rad)).toFixed(2));
+          dialKnob.setAttribute("cy", (50 + 40 * Math.sin(rad)).toFixed(2));
+        }
         if (showPercentage) {
           const rotaryValue = this.shadowRoot?.querySelector(".rotary-value");
           if (rotaryValue) rotaryValue.textContent = `${brightness}%`;
@@ -2680,6 +2706,15 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         const progressArcLength = (angle / 270) * arcLength;
         // Knob angle for the thick pointer: arc starts at 225° (rendered) + progress
         const knobAngle = 225 + angle;
+        // Dial style: SVG knob circle at the arc tip endpoint
+        const dialKnobAngleRad = (angle * Math.PI) / 180;
+        const dialKnobX = (50 + radius * Math.cos(dialKnobAngleRad)).toFixed(2);
+        const dialKnobY = (50 + radius * Math.sin(dialKnobAngleRad)).toFixed(2);
+        const showStepBtns = this.config.brightness_step_buttons === true;
+        const rotaryStep = Math.max(
+          1,
+          Math.min(25, parseInt(this.config.brightness_step_size) || 5),
+        );
         html += `
           <div class="brightness-rotary-wrapper" onwheel="this.getRootNode().host.handleBrightnessWheel(event)">
             <div class="brightness-rotary-container rotary-style-${rotaryStyle}" 
@@ -2704,6 +2739,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
                 <circle cx="50" cy="50" r="${radius}" class="rotary-progress rotary-progress-${rotaryStyle}"
                   style="stroke-dasharray: ${progressArcLength} ${circumference};" />
                 ${rotaryStyle === "gloss" ? `<circle cx="50" cy="50" r="${radius}" class="rotary-gloss-overlay" style="stroke-dasharray: ${progressArcLength} ${circumference};" />` : ""}
+                ${rotaryStyle === "dial" && progressArcLength > 0 ? `<circle class="rotary-dial-knob" cx="${dialKnobX}" cy="${dialKnobY}" r="${sliderThickness + 2}" />` : ""}
               </svg>
               ${rotaryStyle === "thick" ? `<div class="rotary-knob-arm" style="--knob-angle:${knobAngle}deg;"><div class="rotary-knob"></div></div>` : ""}
               <div class="rotary-center-content">
@@ -2868,6 +2904,24 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       }
 
       html += `</div>`;
+
+      // Global step buttons — rendered for any brightness slider mode when enabled
+      if (this.config.show_brightness_slider === true) {
+        const showGlobalStepBtns = this.config.brightness_step_buttons === true;
+        const globalStep = Math.max(
+          1,
+          Math.min(25, parseInt(this.config.brightness_step_size) || 5),
+        );
+        if (showGlobalStepBtns) {
+          html += `
+          <div class="rotary-step-buttons brightness-step-buttons">
+            <button class="rotary-step-btn" title="Decrease by ${globalStep}%"
+              onclick="this.getRootNode().host.handleRotaryStep(-${globalStep})">&#x2212;</button>
+            <button class="rotary-step-btn" title="Increase by ${globalStep}%"
+              onclick="this.getRootNode().host.handleRotaryStep(${globalStep})">&#x2b;</button>
+          </div>`;
+        }
+      }
     }
 
     return html;
@@ -4272,6 +4326,68 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           stroke-linecap: butt;
           transition: stroke-dasharray 0.1s ease;
           opacity: 0.9;
+        }
+        /* dial — clean flat arc like a thermostat, with a round circle knob at the tip */
+        .rotary-progress-dial {
+          fill: none;
+          stroke: var(--primary-color, #1976d2);
+          stroke-width: var(--rotary-stroke, 12);
+          stroke-linecap: round;
+          transition: stroke-dasharray 0.1s ease;
+        }
+        .rotary-style-dial .rotary-bg {
+          opacity: 0.15;
+        }
+        .rotary-style-dial .brightness-rotary-container::before {
+          background: none;
+          box-shadow: none;
+        }
+        .rotary-style-dial .rotary-label {
+          font-size: 14px;
+          color: var(--secondary-text-color);
+        }
+        .rotary-style-dial .rotary-value {
+          font-size: 28px;
+          font-weight: 700;
+          text-shadow: none;
+        }
+        .rotary-dial-knob {
+          fill: var(--card-background-color, #fff);
+          stroke: var(--primary-color, #1976d2);
+          stroke-width: 3;
+          filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.25));
+          transition: cx 0.1s ease, cy 0.1s ease;
+        }
+        /* Step buttons below the rotary */
+        .rotary-step-buttons {
+          display: flex;
+          gap: 24px;
+          justify-content: center;
+          margin-top: 4px;
+        }
+        .rotary-step-btn {
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          border: 2px solid var(--divider-color, rgba(0,0,0,0.15));
+          background: var(--card-background-color, #fff);
+          color: var(--primary-text-color, #333);
+          font-size: 22px;
+          line-height: 1;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 1px 5px rgba(0, 0, 0, 0.12);
+          transition: box-shadow 0.15s ease, transform 0.1s ease;
+          user-select: none;
+        }
+        .rotary-step-btn:hover {
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+          transform: scale(1.05);
+        }
+        .rotary-step-btn:active {
+          transform: scale(0.95);
         }
         .rotary-style-thick .brightness-rotary-container::before {
           display: none; /* hide depth bowl for flat thick look */

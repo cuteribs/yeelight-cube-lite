@@ -404,6 +404,21 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                   (e) => this._onToggleChange(e),
                 )
               : ""}
+            ${createToggleRow(
+              "Show Step Buttons (− / +)",
+              "brightness_step_buttons",
+              cfg.brightness_step_buttons === true,
+              (e) => this._onToggleChange(e),
+            )}
+            ${cfg.brightness_step_buttons === true
+              ? createSliderRow(
+                  "Step Size",
+                  cfg.brightness_step_size || 5,
+                  { min: 1, max: 25, step: 1 },
+                  (e) => this._onSliderChange("brightness_step_size", e),
+                  "%",
+                )
+              : ""}
             <div class="form-row">
               <label>Brightness Slider Style</label>
               ${createButtonGroup(
@@ -586,6 +601,7 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                           { value: "glow", label: "Glow" },
                           { value: "gloss", label: "Gloss" },
                           { value: "thick", label: "Thick" },
+                          { value: "dial", label: "Dial" },
                         ],
                         cfg.brightness_rotary_style || "glow",
                         createButtonGroupChangeHandler(
