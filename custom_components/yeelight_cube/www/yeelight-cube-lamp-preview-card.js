@@ -573,6 +573,189 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     document.addEventListener("touchend", handleEnd);
   }
 
+  // ===== Preset wheel handlers =====
+  _getWheelStops() {
+    const step = Math.max(
+      1,
+      Math.min(50, parseInt(this.config.brightness_wheel_step) || 10),
+    );
+    const stops = [];
+    for (let v = step; v <= 100; v += step) stops.push(v);
+    if (stops[stops.length - 1] !== 100) stops.push(100);
+    return stops;
+  }
+
+  handleWheelTick(value) {
+    const input = this.shadowRoot?.querySelector(".brightness-slider-wheel");
+    if (input) input.value = value;
+    this.handleBrightnessChange({ target: { value } });
+  }
+
+  handleWheelDragStart(event) {
+    event.preventDefault();
+    const viewport = event.currentTarget;
+    const startX = event.clientX ?? event.touches?.[0]?.clientX ?? 0;
+    const stops = this._getWheelStops();
+    const input = viewport
+      .closest(".brightness-wheel-wrapper")
+      ?.querySelector(".brightness-slider-wheel");
+    const startValue = parseInt(input?.value) || stops[0];
+    let startIdx = stops.reduce(
+      (best, v, i) =>
+        Math.abs(v - startValue) < Math.abs(stops[best] - startValue)
+          ? i
+          : best,
+      0,
+    );
+    // Compute tick width from DOM (or estimate)
+    const tick = viewport.querySelector(".brightness-wheel-tick");
+    const tickW = tick ? tick.offsetWidth || 52 : 52;
+
+    this._startDrag();
+
+    const handleMove = (e) => {
+      const cx = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+      const dx = cx - startX;
+      const steps = Math.round(-dx / tickW);
+      const idx = Math.max(0, Math.min(stops.length - 1, startIdx + steps));
+      const value = stops[idx];
+      if (input && parseInt(input.value) !== value) {
+        input.value = value;
+        this.handleBrightnessChange({ target: { value } });
+      }
+    };
+    const handleEnd = () => {
+      this._endDrag();
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleEnd);
+      document.removeEventListener("touchmove", handleMove);
+      document.removeEventListener("touchend", handleEnd);
+    };
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleEnd);
+    document.addEventListener("touchmove", handleMove, { passive: false });
+    document.addEventListener("touchend", handleEnd);
+  }
+
+  handleWheelStep(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const input = this.shadowRoot?.querySelector(".brightness-slider-wheel");
+    if (!input) return;
+    const stops = this._getWheelStops();
+    const cur = parseInt(input.value) || stops[0];
+    let idx = stops.reduce(
+      (best, v, i) =>
+        Math.abs(v - cur) < Math.abs(stops[best] - cur) ? i : best,
+      0,
+    );
+    // Support both vertical and horizontal scroll. Increase when scrolling up
+    // (deltaY < 0) or right (deltaX > 0); decrease otherwise.
+    const goUp =
+      Math.abs(event.deltaY) >= Math.abs(event.deltaX)
+        ? event.deltaY < 0
+        : event.deltaX > 0;
+    idx = goUp ? Math.min(stops.length - 1, idx + 1) : Math.max(0, idx - 1);
+    const value = stops[idx];
+    input.value = value;
+    this.handleBrightnessChange({ target: { value } });
+  }
+
+  _updateWheelVisual(brightness) {
+    const stops = this._getWheelStops();
+    const activeIndex = stops.reduce(
+      (best, v, i) =>
+        Math.abs(v - brightness) < Math.abs(stops[best] - brightness)
+          ? i
+          : best,
+      0,
+    );
+    const tick = this.shadowRoot?.querySelector(".brightness-wheel-tick");
+    const tickW = tick ? tick.offsetWidth || 52 : 52;
+    const track = this.shadowRoot?.querySelector(".brightness-wheel-track");
+    if (track)
+      track.style.setProperty(
+        "--wheel-shift",
+        `${-(activeIndex * tickW + tickW / 2)}px`,
+      );
+    const ticks = this.shadowRoot?.querySelectorAll(".brightness-wheel-tick");
+    if (ticks)
+      ticks.forEach((t, i) => t.classList.toggle("active", i === activeIndex));
+    const val = this.shadowRoot?.querySelector(".brightness-wheel-value");
+    if (val) val.textContent = `${brightness}%`;
+  }
+
+  // ===== Matrix fill handlers =====
+  handleMatrixPointerDown(event) {
+    event.preventDefault();
+    this._startDrag();
+    const grid = event.currentTarget;
+    const total = parseInt(grid.dataset.total) || 1;
+    const input = grid.parentElement?.querySelector(
+      ".brightness-slider-matrix",
+    );
+
+    const applyAt = (clientX, clientY) => {
+      if (clientX === undefined || clientY === undefined) return;
+      const el = this.shadowRoot.elementFromPoint(clientX, clientY);
+      if (
+        el &&
+        el.classList &&
+        el.classList.contains("brightness-matrix-cell")
+      ) {
+        const level = parseInt(el.dataset.level) || 1;
+        const val = Math.max(
+          1,
+          Math.min(100, Math.round((level / total) * 100)),
+        );
+        if (input) input.value = val;
+        this.handleBrightnessChange({ target: { value: val } });
+      }
+    };
+
+    applyAt(
+      event.clientX ?? event.touches?.[0]?.clientX,
+      event.clientY ?? event.touches?.[0]?.clientY,
+    );
+
+    const handleMove = (e) => {
+      const cx = e.clientX ?? e.touches?.[0]?.clientX;
+      const cy = e.clientY ?? e.touches?.[0]?.clientY;
+      if (cx !== undefined) {
+        e.preventDefault();
+        applyAt(cx, cy);
+      }
+    };
+    const handleEnd = () => {
+      this._endDrag();
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleEnd);
+      document.removeEventListener("touchmove", handleMove);
+      document.removeEventListener("touchend", handleEnd);
+      this._dragCleanup = null;
+    };
+    this._dragCleanup = { handleMove, handleEnd };
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleEnd);
+    document.addEventListener("touchmove", handleMove, { passive: false });
+    document.addEventListener("touchend", handleEnd);
+  }
+
+  _updateMatrixVisual(brightness) {
+    const grid = this.shadowRoot?.querySelector(".brightness-matrix-grid");
+    if (!grid) return;
+    const total = parseInt(grid.dataset.total) || 1;
+    const litCount = Math.max(1, Math.round((brightness / 100) * total));
+    grid.querySelectorAll(".brightness-matrix-cell").forEach((cell) => {
+      const level = parseInt(cell.dataset.level) || 0;
+      cell.classList.toggle("lit", level <= litCount);
+    });
+    if (this.config.show_brightness_percentage !== false) {
+      const val = this.shadowRoot?.querySelector(".brightness-matrix-value");
+      if (val) val.textContent = `${brightness}%`;
+    }
+  }
+
   async handleBrightnessChange(event) {
     let newBrightness = parseInt(event.target.value);
 
@@ -628,16 +811,26 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         );
         if (valueRight) valueRight.textContent = `${newBrightness}%`;
       }
+    } else if (sliderStyle === "wheel") {
+      this._updateWheelVisual(newBrightness);
+    } else if (sliderStyle === "matrix") {
+      this._updateMatrixVisual(newBrightness);
     } else if (sliderStyle === "rotary") {
       const angle = ((newBrightness - 1) / 99) * 270; // Map 1-100 to 0-270 degrees
       const radius = 40;
       const circumference = 2 * Math.PI * radius; // ~251.33
       const arcLength = (circumference * 270) / 360; // Exact 270 degree arc
       const progressArcLength = (angle / 270) * arcLength;
-      const rotaryProgress = this.shadowRoot?.querySelector(".rotary-progress");
-      if (rotaryProgress) {
-        rotaryProgress.style.strokeDasharray = `${progressArcLength} ${circumference}`;
-      }
+      const da = `${progressArcLength} ${circumference}`;
+      this.shadowRoot
+        ?.querySelectorAll(".rotary-progress, .rotary-gloss-overlay")
+        .forEach((el) => {
+          el.style.strokeDasharray = da;
+        });
+      // Thick style: move the rectangular knob to the arc tip
+      const knobArm = this.shadowRoot?.querySelector(".rotary-knob-arm");
+      if (knobArm)
+        knobArm.style.setProperty("--knob-angle", `${225 + angle}deg`);
 
       if (showPercentage) {
         const rotaryValue = this.shadowRoot?.querySelector(".rotary-value");
@@ -660,13 +853,34 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       // Sync brightness value in all positions
       this._syncBrightnessValueDisplay(newBrightness);
     } else {
-      // Slider mode (default)
-      if (showPercentage) {
+      // Slider mode — native slider or glow variant
+      if ((this.config.brightness_slider_variant || "thin") === "glow") {
+        const glowFill = this.shadowRoot?.querySelector(
+          ".brightness-glow-fill",
+        );
+        if (glowFill) glowFill.style.width = `${newBrightness}%`;
+        const glowThumb = this.shadowRoot?.querySelector(
+          ".brightness-glow-thumb",
+        );
+        if (glowThumb) glowThumb.style.left = `${newBrightness}%`;
+        if (showPercentage) {
+          const valueRight = this.shadowRoot?.querySelector(
+            ".brightness-value-right",
+          );
+          if (valueRight) valueRight.textContent = `${newBrightness}%`;
+        }
+      } else if (showPercentage) {
         const valueSlider = this.shadowRoot?.querySelector(
           ".brightness-value-slider",
         );
         if (valueSlider) valueSlider.textContent = `${newBrightness}%`;
       }
+      // Update thick slider fill position (CSS var approach)
+      const thickSlider = this.shadowRoot?.querySelector(
+        ".slider-variant-thick",
+      );
+      if (thickSlider)
+        thickSlider.style.setProperty("--slider-pct", `${newBrightness}%`);
     }
 
     // Map 1-100 slider to Home Assistant brightness (displayed as 1%-100%)
@@ -2022,18 +2236,28 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           );
           if (valueRight) valueRight.textContent = `${brightness}%`;
         }
+      } else if (sliderStyle === "wheel") {
+        this._updateWheelVisual(brightness);
+      } else if (sliderStyle === "matrix") {
+        this._updateMatrixVisual(brightness);
       } else if (sliderStyle === "rotary") {
-        const angle = ((brightness - 1) / 99) * 270; // Map 1-100 to 0-270 degrees
+        const angle = ((brightness - 1) / 99) * 270;
         const radius = 40;
-        const circumference = 2 * Math.PI * radius; // ~251.33
-        const arcLength = (circumference * 270) / 360; // Exact 270 degree arc
+        const circumference = 2 * Math.PI * radius;
+        const arcLength = (circumference * 270) / 360;
         const progressArcLength = (angle / 270) * arcLength;
+        const da = `${progressArcLength} ${circumference}`;
         const rotaryProgress =
           this.shadowRoot?.querySelector(".rotary-progress");
-        if (rotaryProgress) {
-          rotaryProgress.style.strokeDasharray = `${progressArcLength} ${circumference}`;
-        }
-
+        if (rotaryProgress) rotaryProgress.style.strokeDasharray = da;
+        this.shadowRoot
+          ?.querySelectorAll(".rotary-gloss-overlay")
+          .forEach((el) => {
+            el.style.strokeDasharray = da;
+          });
+        const knobArm = this.shadowRoot?.querySelector(".rotary-knob-arm");
+        if (knobArm)
+          knobArm.style.setProperty("--knob-angle", `${225 + angle}deg`);
         if (showPercentage) {
           const rotaryValue = this.shadowRoot?.querySelector(".rotary-value");
           if (rotaryValue) rotaryValue.textContent = `${brightness}%`;
@@ -2053,13 +2277,34 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         );
         this._syncBrightnessValueDisplay(brightness);
       } else {
-        // Slider mode (default)
-        if (showPercentage) {
+        // Slider mode — default native slider or glow variant
+        if ((this.config.brightness_slider_variant || "thin") === "glow") {
+          const glowFill = this.shadowRoot?.querySelector(
+            ".brightness-glow-fill",
+          );
+          if (glowFill) glowFill.style.width = `${brightness}%`;
+          const glowThumb = this.shadowRoot?.querySelector(
+            ".brightness-glow-thumb",
+          );
+          if (glowThumb) glowThumb.style.left = `${brightness}%`;
+          if (showPercentage) {
+            const valueRight = this.shadowRoot?.querySelector(
+              ".brightness-value-right",
+            );
+            if (valueRight) valueRight.textContent = `${brightness}%`;
+          }
+        } else if (showPercentage) {
           const valueSlider = this.shadowRoot?.querySelector(
             ".brightness-value-slider",
           );
           if (valueSlider) valueSlider.textContent = `${brightness}%`;
         }
+        // Update thick slider fill position
+        const thickSlider = this.shadowRoot?.querySelector(
+          ".slider-variant-thick",
+        );
+        if (thickSlider)
+          thickSlider.style.setProperty("--slider-pct", `${brightness}%`);
       }
     }
 
@@ -2286,24 +2531,28 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       html += `<div class="brightness-slider-container brightness-style-${sliderStyle} brightness-theme-${brightnessTheme}" style="--slider-thickness: ${sliderThickness}px;" onwheel="this.getRootNode().host.handleBrightnessWheel(event)">`;
 
       if (sliderStyle === "bar") {
-        // Mushroom-style bar
+        // Mushroom-style bar with selectable fill style (solid/pulse/stripes/gloss)
+        const barFill = this.config.brightness_bar_fill || "solid";
+        // Stripes animation is activated only while dragging via JS class
+        const stripesClass = barFill === "stripes" ? " bar-stripes-idle" : "";
         if (showLabel) {
           html += `<div class="brightness-label">${labelContent}</div>`;
         }
         html += `
             <div class="brightness-bar-wrapper brightness-bar-full">
-              <div class="brightness-bar-track">
+              <div class="brightness-bar-track bar-fill-${barFill}${stripesClass}">
                 <div class="brightness-bar-fill" style="width: ${brightnessPercent}%"></div>
+                <div class="brightness-bar-seams"></div>
                 <input 
                   type="range" 
                   min="1" 
                   max="100" 
                   value="${brightness}" 
                   class="brightness-slider brightness-slider-bar"
-                  onmousedown="this.getRootNode().host._startDrag()"
-                  ontouchstart="this.getRootNode().host._startDrag()"
-                  onmouseup="this.getRootNode().host._endDrag()"
-                  ontouchend="this.getRootNode().host._endDrag()"
+                  onmousedown="this.getRootNode().host._startDrag(); this.closest('.brightness-bar-track')?.classList.remove('bar-stripes-idle');"
+                  ontouchstart="this.getRootNode().host._startDrag(); this.closest('.brightness-bar-track')?.classList.remove('bar-stripes-idle');"
+                  onmouseup="this.getRootNode().host._endDrag(); this.closest('.brightness-bar-track')?.classList.add('bar-stripes-idle');"
+                  ontouchend="this.getRootNode().host._endDrag(); this.closest('.brightness-bar-track')?.classList.add('bar-stripes-idle');"
                   oninput="this.getRootNode().host.handleBrightnessChange(event)"
                 />
               </div>
@@ -2314,25 +2563,149 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
               }
             </div>
           `;
+      } else if (sliderStyle === "wheel") {
+        // Preset wheel — drag or scroll to snapped stops
+        const step = Math.max(
+          1,
+          Math.min(50, parseInt(this.config.brightness_wheel_step) || 10),
+        );
+        const wheelStyle = this.config.brightness_wheel_style || "ticks";
+        const stops = [];
+        for (let v = step; v <= 100; v += step) stops.push(v);
+        if (stops[stops.length - 1] !== 100) stops.push(100);
+        const tickW = sliderThickness * 5 + 20; // tick width scales with thickness
+        const activeIndex = stops.reduce(
+          (best, v, i) =>
+            Math.abs(v - brightnessPercent) <
+            Math.abs(stops[best] - brightnessPercent)
+              ? i
+              : best,
+          0,
+        );
+        const shift = -(activeIndex * tickW + tickW / 2);
+        const ticks = stops
+          .map(
+            (v, i) => `
+                <button type="button" class="brightness-wheel-tick wheel-style-${wheelStyle}${
+                  i === activeIndex ? " active" : ""
+                }" data-value="${v}" data-index="${i}" style="width:${tickW}px;flex:0 0 ${tickW}px;"
+                  onclick="this.getRootNode().host.handleWheelTick(${v})">
+                  <span class="wheel-tick-mark"></span>
+                  <span class="wheel-tick-label">${v}</span>
+                </button>`,
+          )
+          .join("");
+        html += `
+            <div class="brightness-wheel-wrapper">
+              <div class="brightness-wheel-value">${brightnessPercent}%</div>
+              <div class="brightness-wheel-viewport wheel-style-${wheelStyle}"
+                style="height:${sliderThickness * 5 + 20}px;"
+                onwheel="this.getRootNode().host.handleWheelStep(event)"
+                onmousedown="this.getRootNode().host.handleWheelDragStart(event)"
+                ontouchstart="this.getRootNode().host.handleWheelDragStart(event)">
+                <div class="brightness-wheel-caret"></div>
+                <div class="brightness-wheel-fade brightness-wheel-fade-left"></div>
+                <div class="brightness-wheel-fade brightness-wheel-fade-right"></div>
+                <div class="brightness-wheel-track" style="--wheel-shift: ${shift}px; --tick-w: ${tickW}px;">
+                  ${ticks}
+                </div>
+              </div>
+              <input type="range" min="${step}" max="100" step="${step}"
+                value="${stops[activeIndex]}"
+                class="brightness-slider brightness-slider-wheel"
+                style="display:none;"
+                oninput="this.getRootNode().host.handleBrightnessChange(event)" />
+            </div>
+          `;
+      } else if (sliderStyle === "matrix") {
+        // Matrix fill — light pixels up; more lit pixels = brighter (on-theme)
+        const cols = Math.max(
+          3,
+          Math.min(20, parseInt(this.config.brightness_matrix_cols) || 10),
+        );
+        const rows = Math.max(
+          1,
+          Math.min(6, parseInt(this.config.brightness_matrix_rows) || 2),
+        );
+        const matrixDir = this.config.brightness_matrix_direction || "row";
+        const matrixColor = this.config.brightness_matrix_color || "#ff9800";
+        const cellPx = sliderThickness * 3 + 4; // cell size scales with thickness
+        const total = cols * rows;
+        const litCount = Math.max(
+          1,
+          Math.round((brightnessPercent / 100) * total),
+        );
+        let cells = "";
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            let level;
+            if (matrixDir === "col") {
+              // Column by column, bottom to top within each column
+              level = c * rows + (rows - 1 - r) + 1;
+            } else {
+              // Row by row, bottom row first
+              const fromBottom = rows - 1 - r;
+              level = fromBottom * cols + c + 1;
+            }
+            const lit = level <= litCount ? " lit" : "";
+            cells += `<div class="brightness-matrix-cell${lit}" data-level="${level}"></div>`;
+          }
+        }
+        html += `
+            <div class="brightness-matrix-wrapper">
+              <div class="brightness-matrix-grid" data-total="${total}"
+                   style="box-sizing:border-box;grid-template-columns:repeat(${cols},1fr);gap:3px;max-width:${cols * (cellPx + 3) + 16}px;--matrix-color:${matrixColor};"
+                   onmousedown="this.getRootNode().host.handleMatrixPointerDown(event)"
+                   ontouchstart="this.getRootNode().host.handleMatrixPointerDown(event)">
+                ${cells}
+              </div>
+              ${
+                this.config.show_brightness_percentage !== false
+                  ? `<div class="brightness-matrix-value">${brightnessPercent}%</div>`
+                  : ""
+              }
+              <input type="range" min="1" max="100" value="${brightness}"
+                class="brightness-slider brightness-slider-matrix"
+                style="display:none;"
+                oninput="this.getRootNode().host.handleBrightnessChange(event)" />
+            </div>
+          `;
       } else if (sliderStyle === "rotary") {
-        // Rotary/circular dial style - 270 degree arc
+        // Rotary/circular dial style - 270 degree arc with multiple visual styles
+        const rotaryStyle = this.config.brightness_rotary_style || "glow";
         const angle = ((brightnessPercent - 1) / 99) * 270; // Map 1-100% to 0-270 degrees
         const radius = 40;
         const circumference = 2 * Math.PI * radius; // ~251.33
         const arcLength = (circumference * 270) / 360; // Exact 270 degree arc
         const progressArcLength = (angle / 270) * arcLength;
+        // Knob angle for the thick pointer: arc starts at 225° (rendered) + progress
+        const knobAngle = 225 + angle;
         html += `
           <div class="brightness-rotary-wrapper" onwheel="this.getRootNode().host.handleBrightnessWheel(event)">
-            <div class="brightness-rotary-container" 
+            <div class="brightness-rotary-container rotary-style-${rotaryStyle}" 
                  onmousedown="this.getRootNode().host.handleRotaryDragStart(event)"
                  ontouchstart="this.getRootNode().host.handleRotaryDragStart(event)"
                  style="position: relative; z-index: 10; --rotary-stroke: ${sliderThickness * 2};">
               <svg class="brightness-rotary-svg" viewBox="0 0 100 100">
+                <defs>
+                  <linearGradient id="brightnessRotaryGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#ffcf7a" />
+                    <stop offset="55%" stop-color="#ff9800" />
+                    <stop offset="100%" stop-color="#ff7043" />
+                  </linearGradient>
+                  <linearGradient id="rotaryGlossGrad" x1="50" y1="10" x2="50" y2="90" gradientUnits="userSpaceOnUse">
+                    <stop offset="0%" stop-color="rgba(255,255,255,0.65)" />
+                    <stop offset="35%" stop-color="rgba(255,255,255,0.18)" />
+                    <stop offset="100%" stop-color="rgba(0,0,0,0)" />
+                  </linearGradient>
+                </defs>
                 <circle cx="50" cy="50" r="${radius}" class="rotary-bg"
                   style="stroke-dasharray: ${arcLength} ${circumference};" />
-                <circle cx="50" cy="50" r="${radius}" class="rotary-progress" 
+                <circle cx="50" cy="50" r="${radius}" class="rotary-progress rotary-progress-${rotaryStyle}"
                   style="stroke-dasharray: ${progressArcLength} ${circumference};" />
+                ${rotaryStyle === "gloss" ? `<circle cx="50" cy="50" r="${radius}" class="rotary-gloss-overlay" style="stroke-dasharray: ${progressArcLength} ${circumference};" />` : ""}
               </svg>
+              ${rotaryStyle === "thick" ? `<div class="rotary-knob-arm" style="--knob-angle:${knobAngle}deg;"><div class="rotary-knob"></div></div>` : ""}
               <div class="rotary-center-content">
                 ${
                   showLabel
@@ -2407,7 +2780,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           }
         }
 
-        html += `<div class="brightness-capsule-host">`;
+        html += `<div class="brightness-capsule-host${this.config.brightness_capsule_variant === "thick" ? " capsule-variant-thick" : ""}">`;
         html += renderCapsuleHTML({
           theme: brightnessTheme,
           thickness: sliderThickness,
@@ -2433,22 +2806,51 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         });
         html += `</div>`;
       } else {
-        // Slider (default) style — thickness driven by --slider-thickness CSS variable
+        // Slider style with multiple visual variants
+        const sliderVariant = this.config.brightness_slider_variant || "thin";
         if (showLabel) {
           html += `<div class="brightness-label">${labelContent}</div>`;
         }
-        html += `
+        if (sliderVariant === "glow") {
+          html += `
+            <div class="brightness-bar-wrapper brightness-glow-wrapper">
+              <div class="brightness-glow-track">
+                <div class="brightness-glow-fill" style="width: ${brightnessPercent}%"></div>
+                <div class="brightness-glow-thumb" style="left: ${brightnessPercent}%"></div>
+                <input 
+                  type="range" 
+                  min="1" 
+                  max="100" 
+                  value="${brightness}" 
+                  class="brightness-slider brightness-slider-glow"
+                  onmousedown="this.getRootNode().host._startDrag()"
+                  ontouchstart="this.getRootNode().host._startDrag()"
+                  onmouseup="this.getRootNode().host._endDrag()"
+                  ontouchend="this.getRootNode().host._endDrag()"
+                  oninput="this.getRootNode().host.handleBrightnessChange(event)"
+                />
+              </div>
+              ${
+                this.config.show_brightness_percentage !== false
+                  ? `<div class="brightness-value-right">${brightnessPercent}%</div>`
+                  : ""
+              }
+            </div>
+          `;
+        } else {
+          html += `
             <div class="brightness-slider-wrapper${
               this.config.show_brightness_percentage !== false
                 ? ""
                 : " brightness-slider-full"
-            }">
+            }" style="--slider-pct:${brightnessPercent}%">
               <input 
                 type="range" 
                 min="1" 
                 max="100" 
                 value="${brightness}" 
-                class="brightness-slider brightness-slider-variable"
+                class="brightness-slider brightness-slider-variable slider-variant-${sliderVariant}"
+                style="--slider-pct:${brightnessPercent}%"
                 onmousedown="this.getRootNode().host._startDrag()"
                 ontouchstart="this.getRootNode().host._startDrag()"
                 onmouseup="this.getRootNode().host._endDrag()"
@@ -2462,6 +2864,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
               }
             </div>
           `;
+        }
       }
 
       html += `</div>`;
@@ -3297,19 +3700,78 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           padding: 8px 0;
         }
         
-        /* Slider Style - Variable Thickness (driven by --slider-thickness) */
+        /* Slider Style - Variable Thickness with multiple visual variants */
+        /* Base styles shared by all variants */
         .brightness-slider-variable {
           width: 100%;
-          height: var(--slider-thickness, 6px);
-          border-radius: calc(var(--slider-thickness, 6px) / 2);
-          background: linear-gradient(to right, var(--disabled-text-color, #333), var(--card-background-color, #fff));
           outline: none;
           -webkit-appearance: none;
           cursor: pointer;
         }
-        .brightness-slider-variable::-webkit-slider-thumb {
+        /* thin (default) — minimal hair-line track */
+        .brightness-slider-variable.slider-variant-thin {
+          height: var(--slider-thickness, 6px);
+          border-radius: calc(var(--slider-thickness, 6px) / 2);
+          background: linear-gradient(to right, #ff9800, var(--divider-color, #444));
+        }
+        .brightness-slider-variable.slider-variant-thin::-webkit-slider-thumb {
           -webkit-appearance: none;
-          appearance: none;
+          width: calc(var(--slider-thickness, 6px) * 3.2);
+          height: calc(var(--slider-thickness, 6px) * 3.2);
+          border-radius: 50%;
+          background: var(--accent-color, #ff9800);
+          cursor: pointer;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        .brightness-slider-variable.slider-variant-thin::-moz-range-thumb {
+          width: calc(var(--slider-thickness, 6px) * 3.2);
+          height: calc(var(--slider-thickness, 6px) * 3.2);
+          border-radius: 50%;
+          background: var(--accent-color, #ff9800);
+          border: none;
+          cursor: pointer;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        /* thick — chunky solid track, fill tracks cursor via --slider-pct */
+        .brightness-slider-variable.slider-variant-thick {
+          height: calc(var(--slider-thickness, 6px) * 4);
+          border-radius: 6px;
+          background: linear-gradient(to right,
+            #ff9800 0%,
+            #ffc56b var(--slider-pct, 50%),
+            var(--divider-color, rgba(0,0,0,0.14)) var(--slider-pct, 50%),
+            var(--divider-color, rgba(0,0,0,0.14)) 100%);
+          outline: none;
+          -webkit-appearance: none;
+          cursor: pointer;
+        }
+        .brightness-slider-variable.slider-variant-thick::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          width: calc(var(--slider-thickness, 6px) * 3);
+          height: calc(var(--slider-thickness, 6px) * 7);
+          border-radius: 5px;
+          background: var(--card-background-color, #fff);
+          border: 2px solid var(--divider-color, #ccc);
+          cursor: pointer;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+        }
+        .brightness-slider-variable.slider-variant-thick::-moz-range-thumb {
+          width: calc(var(--slider-thickness, 6px) * 3);
+          height: calc(var(--slider-thickness, 6px) * 7);
+          border-radius: 5px;
+          background: var(--card-background-color, #fff);
+          border: 2px solid var(--divider-color, #ccc);
+          cursor: pointer;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+        }
+        /* Backwards compat: unmigrated configs had no variant key */
+        .brightness-slider-variable:not([class*="slider-variant-"]) {
+          height: var(--slider-thickness, 6px);
+          border-radius: calc(var(--slider-thickness, 6px) / 2);
+          background: linear-gradient(to right, var(--disabled-text-color, #333), var(--card-background-color, #fff));
+        }
+        .brightness-slider-variable:not([class*="slider-variant-"])::-webkit-slider-thumb {
+          -webkit-appearance: none; appearance: none;
           width: calc(var(--slider-thickness, 6px) * 3);
           height: calc(var(--slider-thickness, 6px) * 3);
           border-radius: 50%;
@@ -3317,13 +3779,13 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           cursor: pointer;
           box-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
-        .brightness-slider-variable::-moz-range-thumb {
+        .brightness-slider-variable:not([class*="slider-variant-"])::-moz-range-thumb {
           width: calc(var(--slider-thickness, 6px) * 3);
           height: calc(var(--slider-thickness, 6px) * 3);
           border-radius: 50%;
           background: var(--accent-color, #ff9800);
-          cursor: pointer;
           border: none;
+          cursor: pointer;
           box-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
         
@@ -3393,6 +3855,333 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           opacity: 0;
           border: none;
         }
+
+        /* ===== Bar fill styles (modifier classes on .brightness-bar-track) ===== */
+        .brightness-bar-seams {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          display: none;
+        }
+        /* Pulse — breathing glow: fill pulses at medium brightness, steady at edges */
+        .bar-fill-pulse .brightness-bar-fill {
+          background: linear-gradient(90deg, #ff8f00 0%, #ffb547 60%, #ffcf7a 100%);
+          animation: barPulseGlow 2s ease-in-out infinite;
+        }
+        @keyframes barPulseGlow {
+          0%, 100% { box-shadow: 0 0 6px rgba(255,152,0,0.4); opacity: 1; }
+          50%       { box-shadow: 0 0 18px rgba(255,152,0,0.85), 0 0 32px rgba(255,120,0,0.4); opacity: 0.92; }
+        }
+        /* Stripes — moving diagonal candy stripes over the warm fill */
+        .bar-fill-stripes .brightness-bar-fill {
+          background:
+            repeating-linear-gradient(
+              -45deg,
+              rgba(255, 255, 255, 0.22) 0,
+              rgba(255, 255, 255, 0.22) 8px,
+              transparent 8px,
+              transparent 16px
+            ),
+            linear-gradient(90deg, #ff8f00 0%, #ffb547 100%);
+          background-size:
+            22px 100%,
+            100% 100%;
+          animation: barStripesShift 0.8s linear infinite;
+        }
+        /* Stripes are paused until drag starts; JS removes/re-adds .bar-stripes-idle */
+        .bar-fill-stripes.bar-stripes-idle .brightness-bar-fill {
+          animation-play-state: paused;
+        }
+        @keyframes barStripesShift {
+          from {
+            background-position:
+              0 0,
+              0 0;
+          }
+          to {
+            background-position:
+              22px 0,
+              0 0;
+          }
+        }
+        /* Gloss — glossy fill with a bright top highlight */
+        .bar-fill-gloss .brightness-bar-fill {
+          background:
+            linear-gradient(
+              180deg,
+              rgba(255, 255, 255, 0.55) 0%,
+              rgba(255, 255, 255, 0.08) 46%,
+              rgba(0, 0, 0, 0.12) 54%,
+              rgba(0, 0, 0, 0) 100%
+            ),
+            linear-gradient(90deg, #ff8f00 0%, #ffc46b 100%);
+          box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.5);
+        }
+
+        /* Glow (neon pill) Style */
+        .brightness-glow-wrapper {
+          gap: 12px;
+        }
+        .brightness-glow-track {
+          position: relative;
+          flex: 1;
+          height: calc(var(--slider-thickness, 6px) * 3.5);
+          background: var(--primary-background-color, rgba(0, 0, 0, 0.35));
+          border-radius: 999px;
+          box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
+          overflow: visible;
+        }
+        .brightness-glow-fill {
+          position: absolute;
+          top: 0;
+          left: 0;
+          height: 100%;
+          background: linear-gradient(
+            90deg,
+            #ff7043 0%,
+            #ff9800 55%,
+            #ffcf7a 100%
+          );
+          border-radius: 999px;
+          box-shadow:
+            0 0 8px rgba(255, 152, 0, 0.75),
+            0 0 16px rgba(255, 120, 0, 0.45);
+          transition: width 0.1s ease;
+          pointer-events: none;
+        }
+        .brightness-glow-thumb {
+          position: absolute;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          width: calc(var(--slider-thickness, 6px) * 3.5 + 6px);
+          height: calc(var(--slider-thickness, 6px) * 3.5 + 6px);
+          border-radius: 50%;
+          background: radial-gradient(
+            circle at 35% 30%,
+            #fff 0%,
+            #ffd38a 45%,
+            #ff9800 100%
+          );
+          box-shadow:
+            0 0 6px rgba(255, 200, 100, 0.9),
+            0 0 14px rgba(255, 150, 0, 0.6),
+            0 2px 4px rgba(0, 0, 0, 0.3);
+          transition: left 0.1s ease;
+          pointer-events: none;
+          z-index: 3;
+        }
+        .brightness-slider-glow {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: transparent;
+          -webkit-appearance: none;
+          cursor: pointer;
+          outline: none;
+          z-index: 2;
+        }
+        .brightness-slider-glow::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          width: 0;
+          height: 0;
+          opacity: 0;
+        }
+        .brightness-slider-glow::-moz-range-thumb {
+          width: 0;
+          height: 0;
+          opacity: 0;
+          border: none;
+        }
+
+        /* ===== Preset Wheel Style ===== */
+        .brightness-wheel-wrapper {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 6px;
+          width: 100%;
+        }
+        .brightness-wheel-value {
+          font-size: 22px;
+          font-weight: 700;
+          color: var(--primary-text-color);
+          text-shadow: 0 0 10px rgba(255, 152, 0, 0.3);
+        }
+        /* Wheel viewport grows with slider thickness */
+        .brightness-wheel-viewport {
+          position: relative;
+          width: 100%;
+          min-height: 40px;
+          overflow: hidden;
+          border-radius: 12px;
+          background: color-mix(
+            in srgb,
+            var(--card-background-color, #fff) 84%,
+            #000
+          );
+          box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.28);
+          cursor: ew-resize;
+          touch-action: none;
+          user-select: none;
+        }
+        /* === Wheel style variants === */
+        /* dots style — round pip indicators */
+        .brightness-wheel-viewport.wheel-style-dots .brightness-wheel-track {
+          align-items: center;
+        }
+        .wheel-style-dots .wheel-tick-mark {
+          width: calc(var(--slider-thickness, 6px) * 1.5 + 3px) !important;
+          height: calc(var(--slider-thickness, 6px) * 1.5 + 3px) !important;
+          border-radius: 50% !important;
+          background: var(--secondary-text-color, #888) !important;
+        }
+        .wheel-style-dots .brightness-wheel-tick.active .wheel-tick-mark {
+          background: radial-gradient(circle at 35% 30%, #ffcf7a, #ff9800) !important;
+          box-shadow: 0 0 8px rgba(255,152,0,0.8) !important;
+        }
+        /* ===== Wheel style gradient removed — keep class for harmless compat ===== */
+        .brightness-wheel-track {
+          position: absolute;
+          left: 50%;
+          top: 0;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          transform: translateX(var(--wheel-shift, -26px));
+          transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .brightness-wheel-tick {
+          height: 100%;
+          flex: 0 0 52px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 0;
+          opacity: 0.45;
+          transform: scale(0.82);
+          transition:
+            opacity 0.18s ease,
+            transform 0.18s ease;
+        }
+        .brightness-wheel-tick .wheel-tick-mark {
+          width: 3px;
+          height: calc(50% - 6px);
+          max-height: 22px;
+          border-radius: 3px;
+          background: var(--secondary-text-color, #888);
+        }
+        .brightness-wheel-tick .wheel-tick-label {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--secondary-text-color, #888);
+        }
+        .brightness-wheel-tick.active {
+          opacity: 1;
+          transform: scale(1.08);
+        }
+        .brightness-wheel-tick.active .wheel-tick-mark {
+          height: calc(65% - 4px);
+          max-height: 28px;
+          background: linear-gradient(180deg, #ffcf7a, #ff8f00);
+          box-shadow: 0 0 8px rgba(255, 152, 0, 0.7);
+        }
+        .brightness-wheel-tick.active .wheel-tick-label {
+          color: var(--primary-text-color);
+        }
+        .brightness-wheel-caret {
+          position: absolute;
+          top: 0;
+          left: 50%;
+          transform: translateX(-50%);
+          width: 2px;
+          height: 100%;
+          background: linear-gradient(
+            180deg,
+            transparent,
+            rgba(255, 152, 0, 0.85),
+            transparent
+          );
+          z-index: 3;
+          pointer-events: none;
+        }
+        .brightness-wheel-fade {
+          position: absolute;
+          top: 0;
+          width: 34px;
+          height: 100%;
+          z-index: 2;
+          pointer-events: none;
+        }
+        .brightness-wheel-fade-left {
+          left: 0;
+          background: linear-gradient(
+            90deg,
+            color-mix(in srgb, var(--card-background-color, #fff) 84%, #000),
+            transparent
+          );
+        }
+        .brightness-wheel-fade-right {
+          right: 0;
+          background: linear-gradient(
+            270deg,
+            color-mix(in srgb, var(--card-background-color, #fff) 84%, #000),
+            transparent
+          );
+        }
+
+        /* ===== Matrix Fill Style ===== */
+        .brightness-matrix-wrapper {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          width: 100%;
+        }
+        .brightness-matrix-grid {
+          flex: 1;
+          display: grid;
+          gap: 4px;
+          padding: 8px;
+          border-radius: 10px;
+          background: #101012;
+          box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.55);
+          cursor: pointer;
+          user-select: none;
+          touch-action: none;
+        }
+        .brightness-matrix-cell {
+          aspect-ratio: 1 / 1;
+          border-radius: 3px;
+          background: #2a2a2e;
+          box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.6);
+          transition:
+            background 0.12s ease,
+            box-shadow 0.12s ease;
+        }
+        .brightness-matrix-cell.lit {
+          background: radial-gradient(
+            circle at 40% 35%,
+            color-mix(in srgb, var(--matrix-color, #ff9800) 15%, #fff) 0%,
+            var(--matrix-color, #ff9800) 55%,
+            color-mix(in srgb, var(--matrix-color, #ff9800) 80%, #000) 100%
+          );
+          box-shadow:
+            0 0 6px color-mix(in srgb, var(--matrix-color, #ff9800) 75%, transparent),
+            inset 0 0 2px rgba(255, 255, 255, 0.4);
+        }
+        .brightness-matrix-value {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--primary-text-color);
+          min-width: 40px;
+          text-align: right;
+        }
         .brightness-value-right {
           font-size: 13px;
           font-weight: 600;
@@ -3416,24 +4205,121 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           cursor: pointer;
           user-select: none;
         }
+        /* Dimensional bowl behind the dial for depth */
+        .brightness-rotary-container::before {
+          content: "";
+          position: absolute;
+          inset: 16px;
+          border-radius: 50%;
+          background: radial-gradient(
+            circle at 50% 36%,
+            color-mix(in srgb, var(--card-background-color, #fff) 86%, #000) 0%,
+            var(--card-background-color, #fff) 72%
+          );
+          box-shadow:
+            inset 0 2px 7px rgba(0, 0, 0, 0.3),
+            inset 0 -1px 3px rgba(255, 255, 255, 0.06),
+            0 6px 16px rgba(0, 0, 0, 0.18);
+          pointer-events: none;
+        }
         .brightness-rotary-svg {
+          position: relative;
           width: 100%;
           height: 100%;
           transform: rotate(135deg);
           pointer-events: none;
+          overflow: visible;
         }
-        .rotary-bg {
+        .rotary-stripe-mask-circle {\n          fill: none;\n          stroke: white;\n          stroke-width: var(--rotary-stroke, 12);\n          stroke-linecap: round;\n        }\n        .rotary-bg {
           fill: none;
-          stroke: var(--disabled-color, rgba(255,255,255,0.1));
+          stroke: var(--divider-color, rgba(0, 0, 0, 0.14));
           stroke-width: var(--rotary-stroke, 12);
           stroke-linecap: round;
+          opacity: 0.55;
         }
-        .rotary-progress {
+        /* Rotary style variants */
+        /* glow (default) — the warm gradient arc with neon drop shadow */
+        .rotary-progress-glow {
           fill: none;
-          stroke: var(--accent-color, #ff9800);
+          stroke: url(#brightnessRotaryGrad);
           stroke-width: var(--rotary-stroke, 12);
           stroke-linecap: round;
           transition: stroke-dasharray 0.1s ease;
+          filter: drop-shadow(0 0 3px rgba(255, 152, 0, 0.85))
+            drop-shadow(0 0 8px rgba(255, 145, 0, 0.5));
+        }
+        /* gloss — same warm arc + bright highlight overlay on top half */
+        .rotary-progress-gloss {
+          fill: none;
+          stroke: url(#brightnessRotaryGrad);
+          stroke-width: var(--rotary-stroke, 12);
+          stroke-linecap: round;
+          transition: stroke-dasharray 0.1s ease;
+        }
+        .rotary-gloss-overlay {
+          fill: none;
+          stroke: url(#rotaryGlossGrad);
+          stroke-width: var(--rotary-stroke, 12);
+          stroke-linecap: round;
+          transition: stroke-dasharray 0.1s ease;
+          pointer-events: none;
+        }
+        /* thick — flat wide arc, no glow, with a rectangular pointer knob */
+        .rotary-progress-thick {
+          fill: none;
+          stroke: #ff9800;
+          stroke-width: calc(var(--rotary-stroke, 12) * 1.4);
+          stroke-linecap: butt;
+          transition: stroke-dasharray 0.1s ease;
+          opacity: 0.9;
+        }
+        .rotary-style-thick .brightness-rotary-container::before {
+          display: none; /* hide depth bowl for flat thick look */
+        }
+        /* Rectangular pointer knob for the thick rotary — an arm rotated to the
+           arc tip; the knob sits at the outer radius pointing outward. */
+        .rotary-knob-arm {
+          position: absolute;
+          inset: 0;
+          transform: rotate(var(--knob-angle, 225deg));
+          transition: transform 0.1s ease;
+          pointer-events: none;
+          z-index: 6;
+        }
+        .rotary-knob {
+          position: absolute;
+          top: 24px;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: calc(var(--rotary-stroke, 12) * 0.9px);
+          height: calc(var(--rotary-stroke, 12) * 1.9px);
+          min-width: 10px;
+          min-height: 22px;
+          border-radius: 5px;
+          background: var(--card-background-color, #fff);
+          border: 2px solid var(--divider-color, #ccc);
+          box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+        }
+        /* ===== Capsule thick variant ===== */
+        .capsule-variant-thick .capsule-track {
+          height: calc(var(--capsule-thickness, 6px) * 4) !important;
+          border-radius: 6px !important;
+        }
+        .capsule-variant-thick .capsule-thumb {
+          width: calc(var(--capsule-thickness, 6px) * 3) !important;
+          height: calc(var(--capsule-thickness, 6px) * 6.5) !important;
+          border-radius: 5px !important;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.28) !important;
+        }
+        /* base class kept for backwards compat; per-variant classes override */
+        .rotary-progress {
+          fill: none;
+          stroke: url(#brightnessRotaryGrad);
+          stroke-width: var(--rotary-stroke, 12);
+          stroke-linecap: round;
+          transition: stroke-dasharray 0.1s ease;
+          filter: drop-shadow(0 0 3px rgba(255, 152, 0, 0.85))
+            drop-shadow(0 0 8px rgba(255, 145, 0, 0.5));
         }
         .rotary-center-content {
           position: absolute;
@@ -3456,6 +4342,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           font-size: 24px;
           font-weight: bold;
           color: var(--primary-text-color);
+          text-shadow: 0 0 10px rgba(255, 152, 0, 0.35);
         }
         .brightness-slider-rotary {
           position: absolute;

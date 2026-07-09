@@ -410,6 +410,8 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                 [
                   { value: "slider", label: "Slider" },
                   { value: "bar", label: "Bar" },
+                  { value: "wheel", label: "Wheel" },
+                  { value: "matrix", label: "Matrix" },
                   { value: "rotary", label: "Rotary" },
                   { value: "capsule", label: "Capsule" },
                 ],
@@ -427,6 +429,180 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                 ),
               )}
             </div>
+            ${cfg.brightness_slider_style === "slider" ||
+            !cfg.brightness_slider_style
+              ? renderModeSettingsSection(
+                  "Slider Settings",
+                  html`
+                    <div class="form-row">
+                      <label>Slider Style</label>
+                      ${createButtonGroup(
+                        [
+                          { value: "thin", label: "Thin" },
+                          { value: "thick", label: "Thick" },
+                          { value: "glow", label: "Glow" },
+                        ],
+                        cfg.brightness_slider_variant || "thin",
+                        createButtonGroupChangeHandler(
+                          "brightness_slider_variant",
+                          (value) => {
+                            this._config = {
+                              ...this._config,
+                              brightness_slider_variant: value,
+                            };
+                            this._fireConfigChanged();
+                          },
+                        ),
+                      )}
+                    </div>
+                  `,
+                )
+              : ""}
+            ${cfg.brightness_slider_style === "bar"
+              ? renderModeSettingsSection(
+                  "Bar Settings",
+                  html`
+                    <div class="form-row">
+                      <label>Bar Fill Style</label>
+                      ${createButtonGroup(
+                        [
+                          { value: "solid", label: "Solid" },
+                          { value: "pulse", label: "Pulse" },
+                          { value: "stripes", label: "Stripes" },
+                          { value: "gloss", label: "Gloss" },
+                        ],
+                        cfg.brightness_bar_fill || "solid",
+                        createButtonGroupChangeHandler(
+                          "brightness_bar_fill",
+                          (value) => {
+                            this._config = {
+                              ...this._config,
+                              brightness_bar_fill: value,
+                            };
+                            this._fireConfigChanged();
+                          },
+                        ),
+                      )}
+                    </div>
+                  `,
+                )
+              : ""}
+            ${cfg.brightness_slider_style === "wheel"
+              ? renderModeSettingsSection(
+                  "Wheel Settings",
+                  html`
+                    <div class="form-row">
+                      <label>Wheel Style</label>
+                      ${createButtonGroup(
+                        [
+                          { value: "ticks", label: "Ticks" },
+                          { value: "dots", label: "Dots" },
+                        ],
+                        cfg.brightness_wheel_style || "ticks",
+                        createButtonGroupChangeHandler(
+                          "brightness_wheel_style",
+                          (value) => {
+                            this._config = {
+                              ...this._config,
+                              brightness_wheel_style: value,
+                            };
+                            this._fireConfigChanged();
+                          },
+                        ),
+                      )}
+                    </div>
+                    ${createSliderRow(
+                      "Preset Step (gap between values)",
+                      cfg.brightness_wheel_step || 10,
+                      { min: 1, max: 25, step: 1 },
+                      (e) => this._onSliderChange("brightness_wheel_step", e),
+                      "%",
+                    )}
+                  `,
+                )
+              : ""}
+            ${cfg.brightness_slider_style === "matrix"
+              ? renderModeSettingsSection(
+                  "Matrix Settings",
+                  html`
+                    ${createSliderRow(
+                      "Columns",
+                      cfg.brightness_matrix_cols || 10,
+                      { min: 3, max: 20, step: 1 },
+                      (e) => this._onSliderChange("brightness_matrix_cols", e),
+                    )}
+                    ${createSliderRow(
+                      "Rows",
+                      cfg.brightness_matrix_rows || 2,
+                      { min: 1, max: 6, step: 1 },
+                      (e) => this._onSliderChange("brightness_matrix_rows", e),
+                    )}
+                    <div class="form-row">
+                      <label>Fill Direction</label>
+                      ${createButtonGroup(
+                        [
+                          { value: "row", label: "Row by Row" },
+                          { value: "col", label: "Col by Col" },
+                        ],
+                        cfg.brightness_matrix_direction || "row",
+                        createButtonGroupChangeHandler(
+                          "brightness_matrix_direction",
+                          (value) => {
+                            this._config = {
+                              ...this._config,
+                              brightness_matrix_direction: value,
+                            };
+                            this._fireConfigChanged();
+                          },
+                        ),
+                      )}
+                    </div>
+                    <div class="form-row">
+                      <label>Lit Cell Color</label>
+                      <input
+                        type="color"
+                        .value="${cfg.brightness_matrix_color || "#ff9800"}"
+                        @input="${(e) => {
+                          this._config = {
+                            ...this._config,
+                            brightness_matrix_color: e.target.value,
+                          };
+                          this._fireConfigChanged();
+                        }}"
+                        style="width:60px;height:32px;border:none;cursor:pointer;border-radius:6px;"
+                      />
+                    </div>
+                  `,
+                )
+              : ""}
+            ${cfg.brightness_slider_style === "rotary"
+              ? renderModeSettingsSection(
+                  "Rotary Settings",
+                  html`
+                    <div class="form-row">
+                      <label>Rotary Style</label>
+                      ${createButtonGroup(
+                        [
+                          { value: "glow", label: "Glow" },
+                          { value: "gloss", label: "Gloss" },
+                          { value: "thick", label: "Thick" },
+                        ],
+                        cfg.brightness_rotary_style || "glow",
+                        createButtonGroupChangeHandler(
+                          "brightness_rotary_style",
+                          (value) => {
+                            this._config = {
+                              ...this._config,
+                              brightness_rotary_style: value,
+                            };
+                            this._fireConfigChanged();
+                          },
+                        ),
+                      )}
+                    </div>
+                  `,
+                )
+              : ""}
             ${cfg.brightness_slider_style === "capsule"
               ? renderModeSettingsSection(
                   "Capsule Settings",
@@ -501,6 +677,26 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                       cfg.brightness_snap_to_positions === true,
                       (e) => this._onToggleChange(e),
                     )}
+                    <div class="form-row">
+                      <label>Capsule Variant</label>
+                      ${createButtonGroup(
+                        [
+                          { value: "thin", label: "Thin" },
+                          { value: "thick", label: "Thick" },
+                        ],
+                        cfg.brightness_capsule_variant || "thin",
+                        createButtonGroupChangeHandler(
+                          "brightness_capsule_variant",
+                          (value) => {
+                            this._config = {
+                              ...this._config,
+                              brightness_capsule_variant: value,
+                            };
+                            this._fireConfigChanged();
+                          },
+                        ),
+                      )}
+                    </div>
                   `,
                 )
               : ""}
