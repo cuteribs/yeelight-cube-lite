@@ -623,10 +623,9 @@ class YeelightCubeDisplayModeSelect(SelectEntity):
 
 
 def _clock_style_label(style_id: int) -> str:
-    """Return a stable numbered label with a descriptive style name."""
+    """Return the descriptive name for a native clock style."""
     style = NATIVE_CLOCK_STYLES.get(style_id, {})
-    name = style.get("name", "Unknown")
-    return f"Style {style_id} - {name}"
+    return style.get("name", "Unknown")
 
 
 _CLOCK_STYLE_OPTIONS = [

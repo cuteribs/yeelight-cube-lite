@@ -1527,10 +1527,10 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             "custom_draw_active": self._custom_draw_active,
             "text_colors": self._text_colors,
             "custom_text": self._custom_text,
-            "clock_style": (
-                f"Style {self._native_clock_style} - "
-                f"{NATIVE_CLOCK_STYLES.get(self._native_clock_style, NATIVE_CLOCK_STYLES[DEFAULT_NATIVE_CLOCK_STYLE])['name']}"
-            ),
+            "clock_style": NATIVE_CLOCK_STYLES.get(
+                self._native_clock_style,
+                NATIVE_CLOCK_STYLES[DEFAULT_NATIVE_CLOCK_STYLE],
+            )["name"],
             "clock_style_name": NATIVE_CLOCK_STYLES.get(
                 self._native_clock_style,
                 NATIVE_CLOCK_STYLES[DEFAULT_NATIVE_CLOCK_STYLE],
