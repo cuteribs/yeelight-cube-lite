@@ -439,7 +439,7 @@ Each lamp creates its own set of per-device entities, plus the integration creat
 | Entity | Type | Description |
 | :-- | :-- | :-- |
 | **Auto Turn On** | Switch | Automatically turn on the lamp when a new mode or drawing is applied |
-| **Yeelight Cube Lite** | Light | Main light entity (on/off, RGB color, brightness) |
+| **Yeelight Cube Lite** | Light | Main light entity (on/off and brightness; RGB color in Matrix mode) |
 | **Content Mode** | Select | Switch between Matrix and the firmware-native Clock |
 | **Display Mode** | Select | Choose the Matrix render mode (see [Display Modes](#display-modes)) |
 | **Clock Style** | Select | Choose one of the 14 native clock styles |

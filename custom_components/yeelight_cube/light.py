@@ -1456,11 +1456,15 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
 
     @property
     def supported_color_modes(self):
+        if self._mode == "Clock":
+            return {ColorMode.BRIGHTNESS}
         return {ColorMode.RGB}
 
     @property
     def color_mode(self):
         # Current active color mode
+        if self._mode == "Clock":
+            return ColorMode.BRIGHTNESS
         return ColorMode.RGB
 
     @property
@@ -1528,10 +1532,6 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             "text_colors": self._text_colors,
             "custom_text": self._custom_text,
             "clock_style": NATIVE_CLOCK_STYLES.get(
-                self._native_clock_style,
-                NATIVE_CLOCK_STYLES[DEFAULT_NATIVE_CLOCK_STYLE],
-            )["name"],
-            "clock_style_name": NATIVE_CLOCK_STYLES.get(
                 self._native_clock_style,
                 NATIVE_CLOCK_STYLES[DEFAULT_NATIVE_CLOCK_STYLE],
             )["name"],
@@ -1992,7 +1992,6 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             self._is_on = True
             if "brightness" in kwargs:
                 self._brightness = max(1, min(255, kwargs["brightness"]))
-                await self._set_native_mode_brightness()
             await self._activate_native_clock()
             if self.hass is not None:
                 self.async_schedule_update_ha_state()
@@ -2456,11 +2455,11 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
 
         timezone_hours = self._native_clock_timezone_hours()
         if (
-            self._native_clock_timezone_offset is not None
-            and timezone_hours != self._native_clock_timezone_offset
+            self._native_clock_timezone_offset is None
+            or timezone_hours != self._native_clock_timezone_offset
         ):
             _LOGGER.info(
-                "[CLOCK] [%s] UTC offset changed from %+d to %+d; refreshing clock",
+                "[CLOCK] [%s] Refreshing clock UTC offset from %s to %+d",
                 self._ip,
                 self._native_clock_timezone_offset,
                 timezone_hours,
@@ -3401,6 +3400,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         ]
 
         self._cube_matrix._close_fast_socket()
+        await self._set_native_mode_brightness()
         await asyncio.sleep(0.1)
         await self._cube_matrix.send_raw_command("set_fx_effect", params)
         self._is_on = True
