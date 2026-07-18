@@ -390,12 +390,6 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
               cfg.show_brightness_slider === true,
               (e) => this._onToggleChange(e),
             )}
-            ${createToggleRow(
-              "Show Brightness Label",
-              "show_brightness_label",
-              cfg.show_brightness_label !== false,
-              (e) => this._onToggleChange(e),
-            )}
             ${cfg.brightness_slider_style !== "capsule"
               ? createToggleRow(
                   "Show Brightness Percentage",
@@ -411,13 +405,35 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
               (e) => this._onToggleChange(e),
             )}
             ${cfg.brightness_step_buttons === true
-              ? createSliderRow(
-                  "Step Size",
-                  cfg.brightness_step_size || 5,
-                  { min: 1, max: 25, step: 1 },
-                  (e) => this._onSliderChange("brightness_step_size", e),
-                  "%",
-                )
+              ? html`
+                  ${createSliderRow(
+                    "Step Size",
+                    cfg.brightness_step_size || 5,
+                    { min: 1, max: 25, step: 1 },
+                    (e) => this._onSliderChange("brightness_step_size", e),
+                    "%",
+                  )}
+                  <div class="form-row">
+                    <label>Button Position</label>
+                    ${createButtonGroup(
+                      [
+                        { value: "below", label: "Below" },
+                        { value: "sides", label: "Sides" },
+                      ],
+                      cfg.brightness_step_position || "below",
+                      createButtonGroupChangeHandler(
+                        "brightness_step_position",
+                        (value) => {
+                          this._config = {
+                            ...this._config,
+                            brightness_step_position: value,
+                          };
+                          this._fireConfigChanged();
+                        },
+                      ),
+                    )}
+                  </div>
+                `
               : ""}
             <div class="form-row">
               <label>Brightness Slider Style</label>
@@ -511,7 +527,8 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                       ${createButtonGroup(
                         [
                           { value: "ticks", label: "Ticks" },
-                          { value: "dots", label: "Dots" },
+                          { value: "dots", label: "Pips" },
+                          { value: "mesh", label: "Mesh" },
                         ],
                         cfg.brightness_wheel_style || "ticks",
                         createButtonGroupChangeHandler(
@@ -526,8 +543,14 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                         ),
                       )}
                     </div>
+                    ${createToggleRow(
+                      "Show Tick Labels",
+                      "brightness_wheel_labels",
+                      cfg.brightness_wheel_labels !== false,
+                      (e) => this._onToggleChange(e),
+                    )}
                     ${createSliderRow(
-                      "Preset Step (gap between values)",
+                      "Tick Spacing",
                       cfg.brightness_wheel_step || 10,
                       { min: 1, max: 25, step: 1 },
                       (e) => this._onSliderChange("brightness_wheel_step", e),
@@ -573,7 +596,28 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                       )}
                     </div>
                     <div class="form-row">
-                      <label>Lit Cell Color</label>
+                      <label>Pixel Shape</label>
+                      ${createButtonGroup(
+                        [
+                          { value: "square", label: "Square" },
+                          { value: "rounded", label: "Rounded" },
+                          { value: "round", label: "Round" },
+                        ],
+                        cfg.brightness_matrix_pixel_style || "rounded",
+                        createButtonGroupChangeHandler(
+                          "brightness_matrix_pixel_style",
+                          (value) => {
+                            this._config = {
+                              ...this._config,
+                              brightness_matrix_pixel_style: value,
+                            };
+                            this._fireConfigChanged();
+                          },
+                        ),
+                      )}
+                    </div>
+                    <div class="form-row">
+                      <label>Accent Color</label>
                       <input
                         type="color"
                         .value="${cfg.brightness_matrix_color || "#ff9800"}"
@@ -624,7 +668,7 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                   "Capsule Settings",
                   html`
                     <div class="form-row">
-                      <label>Brightness Value</label>
+                      <label>Show Value</label>
                       ${createButtonGroup(
                         [
                           { value: "none", label: "None" },
@@ -653,7 +697,7 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                         : "none")) !== "none"
                       ? html`
                           <div class="form-row">
-                            <label>Brightness Value Side</label>
+                            <label>Value Position</label>
                             ${createButtonGroup(
                               [
                                 { value: "left", label: "Left" },
@@ -694,7 +738,7 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                       (e) => this._onToggleChange(e),
                     )}
                     <div class="form-row">
-                      <label>Capsule Variant</label>
+                      <label>Track Style</label>
                       ${createButtonGroup(
                         [
                           { value: "thin", label: "Thin" },
@@ -717,36 +761,13 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                 )
               : ""}
             ${createSliderRow(
-              "Slider Thickness",
+              "Track Thickness",
               cfg.brightness_slider_thickness ??
                 ({ thick: 12, thin: 3 }[cfg.brightness_slider_appearance] || 6),
               { min: 2, max: 10, step: 1 },
               (e) => this._onSliderChange("brightness_slider_thickness", e),
               "px",
             )}
-            <div class="form-row">
-              <label>Brightness Theme</label>
-              ${createButtonGroup(
-                [
-                  { value: "flat", label: "Flat", icon: "▬" },
-                  { value: "subtle", label: "Subtle", icon: "🔲" },
-                  { value: "filled", label: "Filled", icon: "■" },
-                ],
-                cfg.brightness_theme ||
-                  (cfg.capsule_theme === "dark"
-                    ? "filled"
-                    : cfg.capsule_theme === "transparent"
-                      ? "flat"
-                      : "subtle"),
-                createButtonGroupChangeHandler("brightness_theme", (value) => {
-                  this._config = {
-                    ...this._config,
-                    brightness_theme: value,
-                  };
-                  this._fireConfigChanged();
-                }),
-              )}
-            </div>
           </div>
         </div>
 

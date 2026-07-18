@@ -695,7 +695,11 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     if (ticks)
       ticks.forEach((t, i) => t.classList.toggle("active", i === activeIndex));
     const val = this.shadowRoot?.querySelector(".brightness-wheel-value");
-    if (val) val.textContent = `${brightness}%`;
+    if (val)
+      val.textContent =
+        this.config.show_brightness_percentage !== false
+          ? `${brightness}%`
+          : "";
   }
 
   // ===== Matrix fill handlers =====
@@ -731,12 +735,18 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       event.clientY ?? event.touches?.[0]?.clientY,
     );
 
+    let _rafPending = false;
     const handleMove = (e) => {
       const cx = e.clientX ?? e.touches?.[0]?.clientX;
       const cy = e.clientY ?? e.touches?.[0]?.clientY;
       if (cx !== undefined) {
         e.preventDefault();
-        applyAt(cx, cy);
+        if (_rafPending) return;
+        _rafPending = true;
+        requestAnimationFrame(() => {
+          _rafPending = false;
+          applyAt(cx, cy);
+        });
       }
     };
     const handleEnd = () => {
@@ -2548,13 +2558,10 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       );
 
       // Brightness label: simple show/hide (backward compat with old label modes)
-      let showLabel = this.config.show_brightness_label;
-      if (showLabel === undefined) {
-        showLabel = (this.config.brightness_label_mode || "text") !== "none";
-      }
+      let showLabel = false; // label always hidden — removed from UI
       const labelContent = showLabel ? "Brightness" : "";
 
-      html += `<div class="brightness-slider-container brightness-style-${sliderStyle} brightness-theme-${brightnessTheme}" style="--slider-thickness: ${sliderThickness}px;" onwheel="this.getRootNode().host.handleBrightnessWheel(event)">`;
+      html += `<div class="brightness-slider-container brightness-style-${sliderStyle} brightness-theme-${brightnessTheme}" style="--slider-thickness: ${sliderThickness}px; --brightness-color: ${this.config.brightness_matrix_color || "#ff9800"};" onwheel="this.getRootNode().host.handleBrightnessWheel(event)">`;
 
       if (sliderStyle === "bar") {
         // Mushroom-style bar with selectable fill style (solid/pulse/stripes/gloss)
@@ -2596,6 +2603,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           Math.min(50, parseInt(this.config.brightness_wheel_step) || 10),
         );
         const wheelStyle = this.config.brightness_wheel_style || "ticks";
+        const showWheelLabels = this.config.brightness_wheel_labels !== false;
         const stops = [];
         for (let v = step; v <= 100; v += step) stops.push(v);
         if (stops[stops.length - 1] !== 100) stops.push(100);
@@ -2617,13 +2625,13 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
                 }" data-value="${v}" data-index="${i}" style="width:${tickW}px;flex:0 0 ${tickW}px;"
                   onclick="this.getRootNode().host.handleWheelTick(${v})">
                   <span class="wheel-tick-mark"></span>
-                  <span class="wheel-tick-label">${v}</span>
+                  ${showWheelLabels ? `<span class="wheel-tick-label">${v}</span>` : ""}
                 </button>`,
           )
           .join("");
         html += `
             <div class="brightness-wheel-wrapper">
-              <div class="brightness-wheel-value">${brightnessPercent}%</div>
+              <div class="brightness-wheel-value">${this.config.show_brightness_percentage !== false ? `${brightnessPercent}%` : ""}</div>
               <div class="brightness-wheel-viewport wheel-style-${wheelStyle}"
                 style="height:${sliderThickness * 5 + 20}px;"
                 onwheel="this.getRootNode().host.handleWheelStep(event)"
@@ -2654,7 +2662,8 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           Math.min(6, parseInt(this.config.brightness_matrix_rows) || 2),
         );
         const matrixDir = this.config.brightness_matrix_direction || "row";
-        const matrixColor = this.config.brightness_matrix_color || "#ff9800";
+        const matrixPixelStyle =
+          this.config.brightness_matrix_pixel_style || "rounded";
         const cellPx = sliderThickness * 3 + 4; // cell size scales with thickness
         const total = cols * rows;
         const litCount = Math.max(
@@ -2679,8 +2688,8 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         }
         html += `
             <div class="brightness-matrix-wrapper">
-              <div class="brightness-matrix-grid" data-total="${total}"
-                   style="box-sizing:border-box;grid-template-columns:repeat(${cols},1fr);gap:3px;max-width:${cols * (cellPx + 3) + 16}px;--matrix-color:${matrixColor};"
+              <div class="brightness-matrix-grid pixel-shape-${matrixPixelStyle}" data-total="${total}"
+                   style="box-sizing:border-box;grid-template-columns:repeat(${cols},1fr);gap:3px;max-width:${cols * (cellPx + 3) + 16}px;"
                    onmousedown="this.getRootNode().host.handleMatrixPointerDown(event)"
                    ontouchstart="this.getRootNode().host.handleMatrixPointerDown(event)">
                 ${cells}
@@ -2903,21 +2912,50 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         }
       }
 
-      html += `</div>`;
-
-      // Global step buttons — rendered for any brightness slider mode when enabled
+      // Global step buttons inside the container
       if (this.config.show_brightness_slider === true) {
         const showGlobalStepBtns = this.config.brightness_step_buttons === true;
         const globalStep = Math.max(
           1,
           Math.min(25, parseInt(this.config.brightness_step_size) || 5),
         );
-        if (showGlobalStepBtns) {
+        const stepPos = this.config.brightness_step_position || "below";
+        if (showGlobalStepBtns && stepPos === "below") {
           html += `
-          <div class="rotary-step-buttons brightness-step-buttons">
+          <div class="brightness-step-buttons brightness-step-below">
             <button class="rotary-step-btn" title="Decrease by ${globalStep}%"
               onclick="this.getRootNode().host.handleRotaryStep(-${globalStep})">&#x2212;</button>
             <button class="rotary-step-btn" title="Increase by ${globalStep}%"
+              onclick="this.getRootNode().host.handleRotaryStep(${globalStep})">&#x2b;</button>
+          </div>`;
+        }
+      }
+
+      html += `</div>`;
+
+      // Sides layout: buttons flank the slider container (wrap in a flex row)
+      if (this.config.show_brightness_slider === true) {
+        const showGlobalStepBtns = this.config.brightness_step_buttons === true;
+        const globalStep = Math.max(
+          1,
+          Math.min(25, parseInt(this.config.brightness_step_size) || 5),
+        );
+        const stepPos = this.config.brightness_step_position || "below";
+        if (showGlobalStepBtns && stepPos === "sides") {
+          // Wrap last block with side buttons; the container div is already closed above
+          // Re-open a row wrapper using a class that JS or CSS handles
+          // Strategy: inject side buttons as sibling elements the parent flex handles
+          const lastDiv = html.lastIndexOf(
+            '<div class="brightness-slider-container',
+          );
+          const closingIdx = html.lastIndexOf("</div>");
+          const inner = html.slice(lastDiv, closingIdx + 6);
+          html = html.slice(0, lastDiv);
+          html += `<div class="brightness-sides-row">
+            <button class="rotary-step-btn rotary-step-side" title="Decrease by ${globalStep}%"
+              onclick="this.getRootNode().host.handleRotaryStep(-${globalStep})">&#x2212;</button>
+            ${inner}
+            <button class="rotary-step-btn rotary-step-side" title="Increase by ${globalStep}%"
               onclick="this.getRootNode().host.handleRotaryStep(${globalStep})">&#x2b;</button>
           </div>`;
         }
@@ -3917,16 +3955,19 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           pointer-events: none;
           display: none;
         }
-        /* Pulse — breathing glow: fill pulses at medium brightness, steady at edges */
+        /* Pulse — use --brightness-color */
         .bar-fill-pulse .brightness-bar-fill {
-          background: linear-gradient(90deg, #ff8f00 0%, #ffb547 60%, #ffcf7a 100%);
+          background: linear-gradient(90deg,
+            color-mix(in srgb, var(--brightness-color, #ff9800) 90%, #000) 0%,
+            var(--brightness-color, #ff9800) 60%,
+            color-mix(in srgb, var(--brightness-color, #ff9800) 60%, #fff) 100%);
           animation: barPulseGlow 2s ease-in-out infinite;
         }
         @keyframes barPulseGlow {
-          0%, 100% { box-shadow: 0 0 6px rgba(255,152,0,0.4); opacity: 1; }
-          50%       { box-shadow: 0 0 18px rgba(255,152,0,0.85), 0 0 32px rgba(255,120,0,0.4); opacity: 0.92; }
+          0%, 100% { box-shadow: 0 0 6px color-mix(in srgb, var(--brightness-color, #ff9800) 40%, transparent); opacity: 1; }
+          50%       { box-shadow: 0 0 18px color-mix(in srgb, var(--brightness-color, #ff9800) 85%, transparent), 0 0 32px color-mix(in srgb, var(--brightness-color, #ff9800) 40%, transparent); opacity: 0.92; }
         }
-        /* Stripes — moving diagonal candy stripes over the warm fill */
+        /* Stripes — use --brightness-color */
         .bar-fill-stripes .brightness-bar-fill {
           background:
             repeating-linear-gradient(
@@ -3936,10 +3977,10 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
               transparent 8px,
               transparent 16px
             ),
-            linear-gradient(90deg, #ff8f00 0%, #ffb547 100%);
-          background-size:
-            22px 100%,
-            100% 100%;
+            linear-gradient(90deg,
+              color-mix(in srgb, var(--brightness-color, #ff9800) 90%, #000) 0%,
+              var(--brightness-color, #ff9800) 100%);
+          background-size: 22px 100%, 100% 100%;
           animation: barStripesShift 0.8s linear infinite;
         }
         /* Stripes are paused until drag starts; JS removes/re-adds .bar-stripes-idle */
@@ -3958,7 +3999,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
               0 0;
           }
         }
-        /* Gloss — glossy fill with a bright top highlight */
+        /* Gloss — use --brightness-color */
         .bar-fill-gloss .brightness-bar-fill {
           background:
             linear-gradient(
@@ -3968,7 +4009,9 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
               rgba(0, 0, 0, 0.12) 54%,
               rgba(0, 0, 0, 0) 100%
             ),
-            linear-gradient(90deg, #ff8f00 0%, #ffc46b 100%);
+            linear-gradient(90deg,
+              color-mix(in srgb, var(--brightness-color, #ff9800) 80%, #000) 0%,
+              color-mix(in srgb, var(--brightness-color, #ff9800) 70%, #fff) 100%);
           box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.5);
         }
 
@@ -3992,14 +4035,14 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           height: 100%;
           background: linear-gradient(
             90deg,
-            #ff7043 0%,
-            #ff9800 55%,
-            #ffcf7a 100%
+            color-mix(in srgb, var(--brightness-color, #ff9800) 90%, #000) 0%,
+            var(--brightness-color, #ff9800) 55%,
+            color-mix(in srgb, var(--brightness-color, #ff9800) 60%, #fff) 100%
           );
           border-radius: 999px;
           box-shadow:
-            0 0 8px rgba(255, 152, 0, 0.75),
-            0 0 16px rgba(255, 120, 0, 0.45);
+            0 0 8px color-mix(in srgb, var(--brightness-color, #ff9800) 75%, transparent),
+            0 0 16px color-mix(in srgb, var(--brightness-color, #ff9800) 45%, transparent);
           transition: width 0.1s ease;
           pointer-events: none;
         }
@@ -4086,14 +4129,43 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           align-items: center;
         }
         .wheel-style-dots .wheel-tick-mark {
-          width: calc(var(--slider-thickness, 6px) * 1.5 + 3px) !important;
-          height: calc(var(--slider-thickness, 6px) * 1.5 + 3px) !important;
+          width: calc(var(--slider-thickness, 6px) * 1.5 + 4px) !important;
+          height: calc(var(--slider-thickness, 6px) * 1.5 + 4px) !important;
+          min-width: 8px;
+          min-height: 8px;
           border-radius: 50% !important;
-          background: var(--secondary-text-color, #888) !important;
+          background: var(--secondary-text-color, #aaa) !important;
+          opacity: 0.7;
         }
         .wheel-style-dots .brightness-wheel-tick.active .wheel-tick-mark {
-          background: radial-gradient(circle at 35% 30%, #ffcf7a, #ff9800) !important;
-          box-shadow: 0 0 8px rgba(255,152,0,0.8) !important;
+          background: var(--brightness-color, #ff9800) !important;
+          box-shadow: 0 0 6px color-mix(in srgb, var(--brightness-color, #ff9800) 70%, transparent) !important;
+          opacity: 1;
+          width: calc(var(--slider-thickness, 6px) * 2 + 6px) !important;
+          height: calc(var(--slider-thickness, 6px) * 2 + 6px) !important;
+        }
+        /* mesh style — woven cross-hatch texture over the viewport */
+        .brightness-wheel-viewport.wheel-style-mesh,
+        .brightness-wheel-viewport.wheel-style-bars {
+          background-image:
+            repeating-linear-gradient(45deg,
+              rgba(0,0,0,0.07) 0, rgba(0,0,0,0.07) 1px,
+              transparent 0, transparent 50%),
+            repeating-linear-gradient(-45deg,
+              rgba(0,0,0,0.07) 0, rgba(0,0,0,0.07) 1px,
+              transparent 0, transparent 50%);
+          background-size: 7px 7px;
+        }
+        .wheel-style-mesh .wheel-tick-mark,
+        .wheel-style-bars .wheel-tick-mark {
+          background: color-mix(in srgb, var(--brightness-color, #ff9800) 55%, var(--secondary-text-color, #888)) !important;
+        }
+        .wheel-style-mesh .brightness-wheel-tick.active .wheel-tick-mark,
+        .wheel-style-bars .brightness-wheel-tick.active .wheel-tick-mark {
+          background: var(--brightness-color, #ff9800) !important;
+          box-shadow: 0 0 8px color-mix(in srgb, var(--brightness-color, #ff9800) 80%, transparent) !important;
+          height: 70% !important;
+          width: 4px !important;
         }
         /* ===== Wheel style gradient removed — keep class for harmless compat ===== */
         .brightness-wheel-track {
@@ -4218,17 +4290,22 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
             background 0.12s ease,
             box-shadow 0.12s ease;
         }
+        /* matrix color now pulled from --brightness-color CSS var */
         .brightness-matrix-cell.lit {
           background: radial-gradient(
             circle at 40% 35%,
-            color-mix(in srgb, var(--matrix-color, #ff9800) 15%, #fff) 0%,
-            var(--matrix-color, #ff9800) 55%,
-            color-mix(in srgb, var(--matrix-color, #ff9800) 80%, #000) 100%
+            color-mix(in srgb, var(--brightness-color, #ff9800) 15%, #fff) 0%,
+            var(--brightness-color, #ff9800) 55%,
+            color-mix(in srgb, var(--brightness-color, #ff9800) 80%, #000) 100%
           );
           box-shadow:
-            0 0 6px color-mix(in srgb, var(--matrix-color, #ff9800) 75%, transparent),
+            0 0 6px color-mix(in srgb, var(--brightness-color, #ff9800) 75%, transparent),
             inset 0 0 2px rgba(255, 255, 255, 0.4);
         }
+        /* Matrix pixel shape variants */
+        .pixel-shape-square .brightness-matrix-cell { border-radius: 0; }
+        .pixel-shape-rounded .brightness-matrix-cell { border-radius: 3px; }
+        .pixel-shape-round .brightness-matrix-cell { border-radius: 50%; }
         .brightness-matrix-value {
           font-size: 13px;
           font-weight: 600;
@@ -4359,11 +4436,26 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           transition: cx 0.1s ease, cy 0.1s ease;
         }
         /* Step buttons below the rotary */
-        .rotary-step-buttons {
+        /* ===== Step buttons inside brightness container ===== */
+        .brightness-step-below {
           display: flex;
-          gap: 24px;
+          gap: 10px;
           justify-content: center;
-          margin-top: 4px;
+          margin-top: 6px;
+          padding-top: 2px;
+        }
+        /* Sides layout: outer flex row wrapping [btn] [container] [btn] */
+        .brightness-sides-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .brightness-sides-row .brightness-slider-container {
+          flex: 1;
+          min-width: 0;
+        }
+        .rotary-step-side {
+          flex: 0 0 auto;
         }
         .rotary-step-btn {
           width: 40px;
@@ -4526,69 +4618,27 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           padding: 8px 0;
         }
         
-        /* ===== Brightness Theme: Container-level styles ===== */
-        /* Flat — no bg, blends with card */
-        .brightness-slider-container.brightness-theme-flat {
-          background: transparent;
-          padding: 10px 0;
-        }
-        /* Subtle — light tinted bg, thin border */
-        .brightness-slider-container.brightness-theme-subtle {
-          background: color-mix(in srgb, var(--secondary-background-color, #f5f5f5) 40%, var(--card-background-color, #fff) 60%);
-          border-radius: 12px;
-          padding: 12px 14px;
-          border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.08));
-        }
-        /* Filled — deeper bg, strong contrast */
+        /* ===== Brightness Background: removed — container is always transparent ===== */
+        .brightness-slider-container.brightness-theme-flat,
+        .brightness-slider-container.brightness-theme-subtle,
         .brightness-slider-container.brightness-theme-filled {
-          background: var(--secondary-background-color, #2c2c2c);
-          border-radius: 12px;
-          padding: 12px 14px;
-          border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.08));
-        }
-        /* Capsule has its own inner chrome, reset outer container */
-        .brightness-style-capsule.brightness-theme-subtle,
-        .brightness-style-capsule.brightness-theme-filled {
           background: transparent;
-          border: none;
-          border-radius: 0;
           padding: 10px 0;
+          border: none;
+          box-shadow: none;
         }
 
         /* ===== Slider Style themed variants ===== */
-        /* Filled theme: reversed gradient, glow thumb */
-        .brightness-theme-filled .brightness-slider-variable {
-          background: linear-gradient(to right, var(--primary-background-color, #111), var(--secondary-background-color, #444));
-        }
-        .brightness-theme-filled .brightness-slider-variable::-webkit-slider-thumb {
-          box-shadow: 0 0 8px rgba(255, 152, 0, 0.5), 0 2px 4px rgba(0,0,0,0.4);
-        }
-        .brightness-theme-filled .brightness-slider-variable::-moz-range-thumb {
-          box-shadow: 0 0 8px rgba(255, 152, 0, 0.5), 0 2px 4px rgba(0,0,0,0.4);
-        }
-        /* Flat theme: subtle track with no strong gradient */
         .brightness-theme-flat .brightness-slider-variable {
-          background: var(--divider-color, #d0d0d0);
+          background: linear-gradient(to right, var(--brightness-color, #ff9800), var(--divider-color, #d0d0d0));
         }
-        .brightness-theme-flat .brightness-slider-variable::-webkit-slider-thumb {
-          box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-        }
-        .brightness-theme-flat .brightness-slider-variable::-moz-range-thumb {
-          box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-        }
-        /* Subtle theme labels */
+        /* All themes: labels always use card text color (no inversion) */
         .brightness-theme-subtle .brightness-label,
         .brightness-theme-subtle .brightness-value-slider,
-        .brightness-theme-subtle .brightness-value-right {
-          color: var(--primary-text-color);
-        }
-        /* Filled theme labels */
+        .brightness-theme-subtle .brightness-value-right,
         .brightness-theme-filled .brightness-label,
         .brightness-theme-filled .brightness-value-slider,
-        .brightness-theme-filled .brightness-value-right {
-          color: var(--text-primary-color, #fff);
-        }
-        /* Flat theme labels — inherit from parent */
+        .brightness-theme-filled .brightness-value-right,
         .brightness-theme-flat .brightness-label {
           color: var(--primary-text-color);
         }
@@ -4614,11 +4664,13 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         .brightness-theme-flat .rotary-bg {
           stroke: var(--divider-color, rgba(0, 0, 0, 0.08));
         }
-        .brightness-theme-filled .rotary-label {
-          color: var(--text-primary-color, rgba(255,255,255,0.7));
+        .brightness-theme-filled .rotary-label,
+        .brightness-theme-subtle .rotary-label {
+          color: var(--secondary-text-color);
         }
-        .brightness-theme-filled .rotary-value {
-          color: var(--text-primary-color, #fff);
+        .brightness-theme-filled .rotary-value,
+        .brightness-theme-subtle .rotary-value {
+          color: var(--primary-text-color);
         }
 
         .brightness-value {
