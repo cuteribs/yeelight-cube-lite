@@ -35,6 +35,23 @@
             },
             "clock_style": {
                 "name": "Clock: Style"
+            },
+            "native_effect": {
+                "name": "Native effect"
+            },
+            "native_effect_direction": {
+                "name": "Native effect: Direction"
+            },
+            "power_on_state": {
+                "name": "Power-on behavior"
+            }
+        },
+        "number": {
+            "native_effect_speed": {
+                "name": "Native effect: Speed"
+            },
+            "scroll_speed": {
+                "name": "Text scroll: Interval"
             }
         },
         "switch": {
@@ -46,6 +63,9 @@
             },
             "clock_colon_blink": {
                 "name": "Clock: Blink colon"
+            },
+            "scroll_enabled": {
+                "name": "Text scroll"
             }
         }
     }

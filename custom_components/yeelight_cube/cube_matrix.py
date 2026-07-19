@@ -31,6 +31,9 @@ class CubeMatrix:
         self._ip = ip
         self._port = port
         self.device_name = "Yeelight Cube Lite"
+        self.capabilities = {}
+        self.device_model = "Cube Lite"
+        self.firmware_version = None
         self.device._timeout = CONNECT_TIMEOUT  # Keep low — LAN connects take <10ms, 0.5s is plenty
         self._last_command_time = 0
         self._min_command_interval = SAFE_SUSTAINED_INTERVAL
@@ -83,8 +86,15 @@ class CubeMatrix:
         try:
             properties = self.device.get_capabilities()
             if properties and isinstance(properties, dict):
+                self.capabilities = dict(properties)
                 self.device_name = properties.get("name", self.device_name)
                 self.device_id = properties.get("id")
+                self.device_model = properties.get(
+                    "model", properties.get("md", self.device_model)
+                )
+                self.firmware_version = properties.get(
+                    "fw_ver", properties.get("fw_version")
+                )
             else:
                 _LOGGER.debug("get_capabilities returned no data (device may not support it)")
         except Exception as e:
@@ -92,6 +102,43 @@ class CubeMatrix:
 
     def get_bulb(self):
         return self.device
+
+    def close_command_socket(self) -> None:
+        """Close the python-yeelight request socket without touching direct FX."""
+        try:
+            command_socket = self.device._Bulb__socket
+            if command_socket is not None:
+                command_socket.close()
+        except Exception:
+            pass
+        finally:
+            self.device._Bulb__socket = None
+
+    async def read_properties(self, properties: list[str]) -> dict[str, object]:
+        """Read Yeelight properties and normalize the library response."""
+        try:
+            result = await self.send_command_with_recovery("get_prop", properties)
+        finally:
+            self.close_command_socket()
+        if not result:
+            return {}
+        if isinstance(result, dict):
+            values = result.get("result")
+        else:
+            values = result
+        if not isinstance(values, list):
+            return {}
+        return dict(zip(properties, values))
+
+    async def read_effect(self):
+        """Return the firmware-native effect payload when supported."""
+        try:
+            result = await self.send_command_with_recovery("get_fx_effect", [])
+        finally:
+            self.close_command_socket()
+        if isinstance(result, dict):
+            return result.get("result")
+        return result
 
     def consume_reconnected_flag(self) -> bool:
         """
@@ -377,10 +424,18 @@ class CubeMatrix:
             self._fast_socket_time = 0.0
             self._fx_activated_on_socket = False
 
-    async def send_raw_command(self, command: str, params: list = None, timeout: float = 1.5):
+    async def send_raw_command(
+        self,
+        command: str,
+        params: list = None,
+        timeout: float = 1.5,
+        abortive_close: bool = True,
+    ):
         """Send a single command on a FRESH TCP connection (bypasses send_command_fast).
         
-        Opens a new socket, sends the command, closes with RST.
+        Opens a new socket, sends the command, and normally closes with RST.
+        One-shot mode changes can request a graceful FIN so the device has a
+        chance to consume the command before the connection is discarded.
         No rate limiting, no persistent socket, no recovery logic.
         Used by force_refresh to mirror the working yeelight_matrix library
         approach: fresh TCP per command.
@@ -406,9 +461,12 @@ class CubeMatrix:
                 )
             finally:
                 try:
-                    sock.setsockopt(
-                        socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0)
-                    )
+                    if abortive_close:
+                        sock.setsockopt(
+                            socket.SOL_SOCKET,
+                            socket.SO_LINGER,
+                            struct.pack('ii', 1, 0),
+                        )
                     sock.close()
                 except Exception:
                     pass

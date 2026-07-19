@@ -22,6 +22,7 @@ from homeassistant.config_entries import ConfigEntry # type: ignore
 from homeassistant.helpers.event import async_track_state_change_event # type: ignore
 from homeassistant.helpers import config_validation as cv # type: ignore
 from homeassistant.helpers import entity_registry as er # type: ignore
+from homeassistant.exceptions import HomeAssistantError # type: ignore
 from homeassistant.util import dt as dt_util # type: ignore
 from yeelight import BulbException # type: ignore
 from .const import (
@@ -29,11 +30,16 @@ from .const import (
     CONF_IP,
     DEFAULT_MATRIX_DISPLAY_MODE,
     DEFAULT_NATIVE_CLOCK_STYLE,
+    DEFAULT_NATIVE_EFFECT,
     DOMAIN,
     MATRIX_DISPLAY_MODES,
     NATIVE_CLOCK_APPLY,
     NATIVE_CLOCK_EFFECT_ID,
     NATIVE_CLOCK_STYLES,
+    NATIVE_EFFECT_APPLY,
+    NATIVE_EFFECT_DIRECTION_VALUES,
+    NATIVE_EFFECTS,
+    POWER_ON_STATES,
 )
 from .cube_matrix import CubeMatrix, RECONNECT_COOLDOWN_INITIAL, CONNECT_TIMEOUT, RECOVERY_CONNECT_TIMEOUT
 from .layout import Layout, Module, FONT_MAPS, TOTAL_COLUMNS, TOTAL_ROWS
@@ -44,6 +50,42 @@ from .image_utils import image_to_matrix
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.debug("Yeelight Cube Lite light.py module loaded")
+
+LIGHT_SERVICE_NAMES = (
+    "preview_gradient_modes",
+    "load_palette",
+    "get_pixel_art",
+    "save_pixel_art",
+    "remove_pixel_art",
+    "rename_pixel_art",
+    "apply_pixel_art",
+    "apply_custom_pixels",
+    "update_pixel_arts",
+    "set_brightness",
+    "set_orientation",
+    "set_font",
+    "set_alignment",
+    "set_palettes",
+    "save_palette",
+    "rename_palette",
+    "set_custom_text",
+    "set_angle",
+    "set_text_colors",
+    "display_image",
+    "set_mode",
+    "set_solid_color",
+    "set_full_panel",
+    "remove_palette",
+    "test_display",
+    "set_preview_adjustments",
+    "force_refresh",
+    "set_color_accuracy",
+    "set_color_calibration",
+    "set_calibration_lock",
+    "save_state",
+    "restore_state",
+    "set_button_effects",
+)
 
 # Timing constants
 APPLY_POST_DELAY = 0.0        # No post-delay needed -- send_command_fast doesn't wait for responses
@@ -177,12 +219,15 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
     @property
     def device_info(self):
         # Use config_entry.entry_id as the unique identifier for grouping (matches switch)
-        return {
+        info = {
             "identifiers": {(DOMAIN, self._config_entry.entry_id)},
             "name": self._attr_name,
             "manufacturer": "Yeelight",
-            "model": "Cube Matrix",
+            "model": self._cube_matrix.device_model or "Cube Lite",
         }
+        if self._cube_matrix.firmware_version:
+            info["sw_version"] = self._cube_matrix.firmware_version
+        return info
     # Store custom pixel data for Custom Draw mode
     _custom_pixels = None
 
@@ -797,6 +842,15 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         self._native_clock_12_hour = False
         self._native_clock_colon_blink = True
         self._native_clock_timezone_offset = None
+        self._native_effect = DEFAULT_NATIVE_EFFECT
+        self._native_effect_speed = 50
+        self._native_effect_direction = "Up"
+        self._power_on_state = "On"
+        self._button_effects = []
+        # Skip property polling during entity construction. Startup already
+        # restores the display and several helper entities at once; delaying the
+        # first read avoids adding another TCP connection to that burst.
+        self._last_native_state_poll = time.monotonic()
         
         # Text scrolling functionality
         self._scroll_speed = 0.2  # Scroll speed in seconds per step
@@ -968,6 +1022,14 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         self._transition_select_entity = None
         self._transition_steps_entity = None
         self._transition_duration_entity = None
+
+        # Entity references for native firmware controls.
+        self._native_effect_select_entity = None
+        self._native_effect_direction_select_entity = None
+        self._native_effect_speed_entity = None
+        self._power_on_state_select_entity = None
+        self._scroll_enabled_switch_entity = None
+        self._scroll_speed_entity = None
         
         # Camera entity references -- set by camera.py async_setup_entry.
         # Used for direct push notifications (bypass state-change-event delay).
@@ -1044,7 +1106,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             # Only schedule display retries for display operations
             if op_name.startswith('display:'):
                 self._maybe_schedule_retry()
-            return
+            return False
         
         _LOGGER.debug(
             f"[OP #{op_id}] [{self._ip}] > {op_name} "
@@ -1076,7 +1138,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                     # Only schedule display retries for display operations
                     if is_display_op:
                         self._maybe_schedule_retry()
-                    return
+                    return False
             # Success
             _LOGGER.debug(f"[OP #{op_id}] [{self._ip}] [OK] {op_name} complete")
             # Only reset display retry state on display op success
@@ -1088,6 +1150,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             self._cube_matrix._consecutive_failures = 0
             # Clear circuit breaker on any success
             self._hard_timeout_times.clear()
+            return True
         except AttributeError as e:
             if "'NoneType'" in str(e):
                 _LOGGER.debug(
@@ -1139,6 +1202,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                 _LOGGER.error(
                     f"[OP #{op_id}] [{self._ip}] Unexpected error in {op_name}: {e}"
                 )
+        return False
 
     MAX_DISPLAY_RETRIES = 3  # 3 retries ~= 20s total, then health check takes over
 
@@ -1456,14 +1520,14 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
 
     @property
     def supported_color_modes(self):
-        if self._mode == "Clock":
+        if self._mode in ("Clock", "Native Effect"):
             return {ColorMode.BRIGHTNESS}
         return {ColorMode.RGB}
 
     @property
     def color_mode(self):
         # Current active color mode
-        if self._mode == "Clock":
+        if self._mode in ("Clock", "Native Effect"):
             return ColorMode.BRIGHTNESS
         return ColorMode.RGB
 
@@ -1497,7 +1561,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
 
     @property
     def content_mode(self):
-        return self._mode if self._mode == "Clock" else "Matrix"
+        return self._mode if self._mode in ("Clock", "Native Effect") else "Matrix"
     
     def _should_auto_turn_on(self) -> bool:
         """Check if lamp should auto-turn-on when receiving commands while off."""
@@ -1512,6 +1576,10 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
     @property
     def is_on(self):
         return self._is_on
+
+    @property
+    def available(self):
+        return not self._cube_matrix._device_unreachable
 
     @property
     def extra_state_attributes(self):
@@ -1539,6 +1607,11 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             "clock_show_date": self._native_clock_show_date,
             "clock_12_hour": self._native_clock_12_hour,
             "clock_colon_blink": self._native_clock_colon_blink,
+            "native_effect": self._native_effect,
+            "native_effect_speed": self._native_effect_speed,
+            "native_effect_direction": self._native_effect_direction,
+            "power_on_state": self._power_on_state,
+            "button_effects": list(self._button_effects),
             "background_color": self._background_color,
             "alignment": self._alignment,
             "angle": self._angle,
@@ -1582,6 +1655,8 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             "transition_type": self._transition_type,
             "transition_steps": self._transition_steps,
             "transition_duration": self._transition_duration,
+            "scroll_speed": self._scroll_speed,
+            "scroll_enabled": self._scroll_enabled,
         }
         # Add current matrix state: list of 100 RGB tuples (or hex), and brightness.
         # CRITICAL: Apply _apply_final_brightness here so the JS card gets
@@ -1728,7 +1803,10 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                 # Fallback for old state: if mode == 'Custom Draw', treat as custom_draw_active
                 self._custom_draw_active = old_state.attributes.get("mode") == "Custom Draw"
             restored_mode = old_state.attributes.get("mode")
-            if restored_mode in MATRIX_DISPLAY_MODES or restored_mode == "Clock":
+            if restored_mode in MATRIX_DISPLAY_MODES or restored_mode in (
+                "Clock",
+                "Native Effect",
+            ):
                 self._mode = restored_mode
             matrix_mode = old_state.attributes.get("matrix_mode")
             if matrix_mode in MATRIX_DISPLAY_MODES:
@@ -1751,6 +1829,26 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                 self._native_clock_colon_blink = bool(
                     old_state.attributes["clock_colon_blink"]
                 )
+            native_effect = old_state.attributes.get("native_effect")
+            if native_effect in NATIVE_EFFECTS:
+                self._native_effect = native_effect
+            if old_state.attributes.get("native_effect_speed") is not None:
+                self._native_effect_speed = max(
+                    1, min(100, int(old_state.attributes["native_effect_speed"]))
+                )
+            native_direction = old_state.attributes.get("native_effect_direction")
+            if native_direction in NATIVE_EFFECT_DIRECTION_VALUES:
+                self._native_effect_direction = native_direction
+            power_on_state = old_state.attributes.get("power_on_state")
+            if power_on_state in POWER_ON_STATES:
+                self._power_on_state = power_on_state
+            button_effects = old_state.attributes.get("button_effects")
+            if isinstance(button_effects, list):
+                self._button_effects = [
+                    name
+                    for name in button_effects
+                    if name in NATIVE_EFFECTS or name.startswith("Clock: ")
+                ][:8]
             if old_state.attributes.get("custom_text") is not None:
                 self._custom_text = old_state.attributes["custom_text"]
             if old_state.attributes.get("background_color") is not None:
@@ -1837,7 +1935,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         
         _LOGGER.debug("[CLEANUP] Stopped scroll timer and background tasks on entity removal")
 
-    # Pixel Art service handlers are now registered in async_setup_entry
+    # Entity-facing service handlers are registered once from component setup.
 
     async def ensure_fx_ready(self):
         """Ensure FX mode is active using raw TCP (fresh connection per command).
@@ -1996,6 +2094,14 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             if self.hass is not None:
                 self.async_schedule_update_ha_state()
             return
+        if self._mode == "Native Effect":
+            self._is_on = True
+            if "brightness" in kwargs:
+                self._brightness = max(1, min(255, kwargs["brightness"]))
+            await self._activate_native_effect()
+            if self.hass is not None:
+                self.async_schedule_update_ha_state()
+            return
         
         # Ensure FX mode is active using raw TCP (proven reliable).
         # ensure_fx_ready() handles activate_fx_mode + set_bright atomically.
@@ -2074,8 +2180,12 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
     async def _internal_turn_off(self, **kwargs):
         """Internal turn_off implementation that executes in the queue."""
         _LOGGER.debug(f"[TURN_OFF] Executing turn_off")
-        await self.erase_all()
-        await self.apply()
+        if self._mode in ("Clock", "Native Effect"):
+            self._cube_matrix._close_fast_socket()
+            await self._cube_matrix.send_raw_command("set_power", ["off"])
+        else:
+            await self.erase_all()
+            await self.apply()
         self._is_on = False
         # NOTE: Do NOT reset _fx_mode_is_direct here!
         # The FX socket is still alive after sending blank pixel data.
@@ -2176,7 +2286,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             self._brightness = max(1, min(255, brightness))  # Clamp to 1-255 for ON state
             _LOGGER.debug(f"[BRIGHTNESS #{call_id}] Brightness changed: {old_brightness} -> {self._brightness}")
 
-            if self._mode == "Clock":
+            if self._mode in ("Clock", "Native Effect"):
                 await self._set_native_mode_brightness()
                 if self.hass is not None:
                     self.async_schedule_update_ha_state()
@@ -2449,22 +2559,54 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         _LOGGER.debug("[BRIGHTNESS RETRY] Retry processor finished (no pending brightness)")
 
     async def async_update(self, *args, **kwargs):
-        """Refresh the native clock when the local UTC offset changes."""
-        if self._mode != "Clock" or not self._is_on:
+        """Refresh timezone and best-effort native device properties."""
+        if self._mode == "Clock" and self._is_on:
+            timezone_hours = self._native_clock_timezone_hours()
+            if (
+                self._native_clock_timezone_offset is None
+                or timezone_hours != self._native_clock_timezone_offset
+            ):
+                _LOGGER.info(
+                    "[CLOCK] [%s] Refreshing clock UTC offset from %s to %+d",
+                    self._ip,
+                    self._native_clock_timezone_offset,
+                    timezone_hours,
+                )
+                await self.async_apply_display_mode(update_type="display_update")
+
+        # Cube Lite does not answer get_prop while a firmware-native renderer
+        # is active. Opening that standard LAN-control connection can also make
+        # the firmware leave the clock/effect and restore an older mode.
+        if self._mode in ("Clock", "Native Effect"):
             return
 
-        timezone_hours = self._native_clock_timezone_hours()
-        if (
-            self._native_clock_timezone_offset is None
-            or timezone_hours != self._native_clock_timezone_offset
-        ):
-            _LOGGER.info(
-                "[CLOCK] [%s] Refreshing clock UTC offset from %s to %+d",
-                self._ip,
-                self._native_clock_timezone_offset,
-                timezone_hours,
+        now = time.monotonic()
+        if now - self._last_native_state_poll < 60:
+            return
+        # Matrix rendering owns a persistent direct-FX socket. A second polling
+        # connection can make the Cube's small TCP stack drop animation frames.
+        if self._fx_mode_is_direct:
+            return
+        self._last_native_state_poll = now
+        try:
+            props = await self._cube_matrix.read_properties(
+                ["power", "bright", "init_power_opt"]
             )
-            await self.async_apply_display_mode(update_type="display_update")
+            power = str(props.get("power", "")).lower()
+            if power in ("on", "off"):
+                self._is_on = power == "on"
+            brightness = props.get("bright")
+            if brightness not in (None, ""):
+                self._brightness = max(
+                    1, min(255, round(int(brightness) * 255 / 100))
+                )
+            power_value = props.get("init_power_opt")
+            for label, value in POWER_ON_STATES.items():
+                if str(power_value) == str(value):
+                    self._power_on_state = label
+                    break
+        except Exception as err:
+            _LOGGER.debug("[%s] Native property polling unavailable: %s", self._ip, err)
 
     async def erase_all(self):
         background_color_hex = rgb_to_hex(self._background_color)
@@ -3400,9 +3542,17 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         ]
 
         self._cube_matrix._close_fast_socket()
-        await self._set_native_mode_brightness()
+        # Keep this as the first fresh-socket command. Cube Lite can drop the
+        # clock activation when set_bright opens and resets a socket just before
+        # set_fx_effect; brightness remains adjustable after activation.
         await asyncio.sleep(0.1)
-        await self._cube_matrix.send_raw_command("set_fx_effect", params)
+        await self._cube_matrix.send_raw_command(
+            "set_fx_effect", params, abortive_close=False
+        )
+        # Applying brightness before set_fx_effect can cancel clock activation,
+        # but the firmware accepts it once the native renderer is running.
+        await asyncio.sleep(0.1)
+        await self._set_native_mode_brightness()
         self._is_on = True
         self._fx_mode_is_direct = False
         self._last_fx_mode_time = 0.0
@@ -3417,6 +3567,123 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             timezone_hours,
         )
 
+    async def _activate_native_effect(self) -> None:
+        """Activate one of the Cube Lite firmware's built-in animations."""
+        spec = NATIVE_EFFECTS.get(
+            self._native_effect, NATIVE_EFFECTS[DEFAULT_NATIVE_EFFECT]
+        )
+        effect_config = {"mode": spec["mode"], "onoff": 1}
+        if spec.get("speed"):
+            effect_config["rate"] = self._native_effect_speed
+        directions = spec.get("directions")
+        if directions:
+            if self._native_effect_direction not in directions:
+                self._native_effect_direction = directions[0]
+            effect_config["direction"] = NATIVE_EFFECT_DIRECTION_VALUES[
+                self._native_effect_direction
+            ]
+
+        params = [
+            spec["effect_id"],
+            0,
+            NATIVE_EFFECT_APPLY,
+            effect_config,
+        ]
+        self._cube_matrix._close_fast_socket()
+        await self._set_native_mode_brightness()
+        await asyncio.sleep(0.1)
+        await self._cube_matrix.send_raw_command("set_fx_effect", params)
+        self._is_on = True
+        self._fx_mode_is_direct = False
+        self._last_fx_mode_time = 0.0
+        self._notify_camera_preview()
+        if self.hass is not None:
+            self.async_schedule_update_ha_state()
+
+    async def async_set_power_on_state(self, option: str) -> None:
+        """Set the Cube Lite's power recovery behavior."""
+        if option not in POWER_ON_STATES:
+            raise ValueError(f"Unsupported power-on state: {option}")
+        self._cube_matrix._close_fast_socket()
+        try:
+            result = await self._cube_matrix.send_command_with_recovery(
+                "set_ps", ["cfg_init_power", POWER_ON_STATES[option]]
+            )
+            if result is None:
+                raise RuntimeError(
+                    "Power-on behavior command was skipped during connection cooldown"
+                )
+        finally:
+            self._cube_matrix.close_command_socket()
+        self._power_on_state = option
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+    def _effect_persist_item(self, name: str) -> dict:
+        """Build one official-app compatible physical-button effect entry."""
+        if name.startswith("Clock: "):
+            style_name = name.removeprefix("Clock: ")
+            for style_id, style in NATIVE_CLOCK_STYLES.items():
+                if style["name"] == style_name:
+                    config = {"mode": NATIVE_CLOCK_EFFECT_ID, "mixer": style["mixer"]}
+                    if "color" in style:
+                        config["color"] = [style["color"]]
+                    clock_data = bytes(
+                        (
+                            2 if self._native_clock_show_date else 1,
+                            self._native_clock_timezone_hours() & 0xFF,
+                            1 if self._native_clock_12_hour else 0,
+                            0 if self._native_clock_colon_blink else 1,
+                        )
+                    )
+                    config["data"] = base64.b64encode(clock_data).decode("ascii")
+                    return {
+                        "effect_id": NATIVE_CLOCK_EFFECT_ID,
+                        "custom_id": style_id,
+                        "effect_params": [config],
+                    }
+        spec = NATIVE_EFFECTS.get(name)
+        if spec:
+            config = {"mode": spec["mode"], "onoff": 1}
+            if spec.get("speed"):
+                config["rate"] = self._native_effect_speed
+            directions = spec.get("directions")
+            if directions:
+                direction = self._native_effect_direction
+                if direction not in directions:
+                    direction = directions[0]
+                config["direction"] = NATIVE_EFFECT_DIRECTION_VALUES[
+                    direction
+                ]
+            return {
+                "effect_id": spec["effect_id"],
+                "custom_id": 0,
+                "effect_params": [config],
+            }
+        raise ValueError(f"Unknown native effect: {name}")
+
+    async def async_set_button_effects(self, effect_names: list[str]) -> None:
+        """Write up to eight ordered presets used by the physical button."""
+        if not 1 <= len(effect_names) <= 8:
+            raise ValueError("The physical button list must contain 1 to 8 effects")
+        self._cube_matrix._close_fast_socket()
+        try:
+            for index, name in enumerate(effect_names):
+                result = await self._cube_matrix.send_command_with_recovery(
+                    "update_persist_effect_list",
+                    [index, self._effect_persist_item(name)],
+                )
+                if result is None:
+                    raise RuntimeError(
+                        f"Physical-button preset slot {index + 1} was skipped "
+                        "during connection cooldown"
+                    )
+        finally:
+            self._cube_matrix.close_command_socket()
+        self._button_effects = list(effect_names)
+        if self.hass is not None:
+            self.async_write_ha_state()
+
     async def _apply_display_mode_internal(self, skip_post_delay: bool = False):
         """Internal method that actually applies the display mode - called by queue processor"""
         try:
@@ -3424,6 +3691,11 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                 self._is_scrolling = False
                 self.stop_scroll_timer()
                 await self._activate_native_clock()
+                return
+            if self._mode == "Native Effect":
+                self._is_scrolling = False
+                self.stop_scroll_timer()
+                await self._activate_native_effect()
                 return
 
             background_color_hex = rgb_to_hex(self._background_color)
@@ -4387,6 +4659,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         "_custom_text", "_text_colors", "_mode", "_matrix_mode", "_native_clock_style",
         "_native_clock_show_date", "_native_clock_12_hour",
         "_native_clock_colon_blink", "_full_panel",
+        "_native_effect", "_native_effect_speed", "_native_effect_direction",
         "_angle",
         "_background_color", "_alignment", "_font", "_orientation", "_rgb_color",
         "_brightness", "_custom_pixels", "_custom_draw_active",
@@ -4437,6 +4710,12 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             self._clock_show_date_switch_entity,
             self._clock_12_hour_switch_entity,
             self._clock_colon_blink_switch_entity,
+            self._native_effect_select_entity,
+            self._native_effect_direction_select_entity,
+            self._native_effect_speed_entity,
+            self._power_on_state_select_entity,
+            self._scroll_enabled_switch_entity,
+            self._scroll_speed_entity,
             self._alignment_select_entity,
             self._font_select_entity,
             self._angle_number_entity,
@@ -4445,6 +4724,8 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
                 update = getattr(ref, "async_update_from_light", None)
                 if update:
                     update()
+                else:
+                    ref.async_write_ha_state()
         for entity in self._preview_number_entities.values():
             if getattr(entity, "hass", None) is not None:
                 entity.async_update_from_light()
@@ -4496,14 +4777,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         hass.data[DOMAIN][entry.entry_id] = {}
     
     hass.data[DOMAIN][entry.entry_id]["light"] = light_entity
+    return True
+
+
+def async_setup_light_services(hass: HomeAssistant) -> bool:
+    """Register entity-facing actions once at component setup."""
 
     # Services should only be registered ONCE (not per device)
     # Skip ALL service registration if already registered to avoid duplicate handlers
     if hass.services.has_service(DOMAIN, "save_pixel_art"):
-        _LOGGER.debug(f"[SERVICES] Services already registered, skipping service registration for device {ip}")
+        _LOGGER.debug("[SERVICES] Light services already registered")
         return True
     
-    _LOGGER.debug(f"[SERVICES] First device ({ip}) - registering all Yeelight Cube Lite services")
+    _LOGGER.debug("[SERVICES] Registering Yeelight Cube Lite light services")
     
     # Deduplication tracker for palette/pixel art deletions
     # Since cards can have multiple target entities, the same deletion service can be called multiple times
@@ -5827,13 +6113,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             vol.Required("entity_id", description="Target lamp entity (e.g. light.cubelite_192_168_4_102)"): _entity_id_or_list,
         })
     )
-    # Store the light entity and palettes in hass.data for palette sensor registration and frontend use
-    if DOMAIN not in hass.data:
-        hass.data[DOMAIN] = {}
-    hass.data[DOMAIN]["light_entity"] = light_entity
-    # light_entity._palettes is already a shared reference to hass.data[DOMAIN]["palettes_v2"] from __init__
-    # No need to copy - they're the same object
-
     async def handle_set_mode(service_call):
         # Supports multi-entity parallel dispatch
         mode = service_call.data.get("mode")
@@ -5841,6 +6120,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         
         text_modes = [
             "Clock",
+            "Native Effect",
             "Solid Color",
             "Letter Gradient",
             "Column Gradient",
@@ -5873,7 +6153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 target_entity._mode = mode
             if mode == "Custom Draw":
                 target_entity._custom_draw_active = True
-            elif mode == "Clock":
+            elif mode in ("Clock", "Native Effect"):
                 target_entity._mode = mode
                 target_entity._custom_draw_active = False
             else:
@@ -5894,6 +6174,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         schema=vol.Schema({
             vol.Required("mode", description="Display mode for text/gradients"): vol.In([
                 "Clock",
+                "Native Effect",
                 "Solid Color",
                 "Letter Gradient", 
                 "Column Gradient",
@@ -6345,4 +6626,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             vol.Required("entity_id"): _entity_id_or_list,
         })
     )
+
+    async def handle_set_button_effects(service_call):
+        """Set the ordered native-effect list cycled by the physical button."""
+        targets = _resolve_entities(service_call, "SET_BUTTON_EFFECTS")
+        if not targets:
+            return
+        effect_names = service_call.data["effects"]
+        results = await asyncio.gather(
+            *(
+                target._execute_hardware_op(
+                    lambda target=target: target.async_set_button_effects(
+                        effect_names
+                    ),
+                    "set_button_effects",
+                )
+                for target in targets
+            )
+        )
+        if not all(results):
+            raise HomeAssistantError(
+                "One or more Cube Lite devices did not accept the button presets"
+            )
+
+    button_effect_options = list(NATIVE_EFFECTS) + [
+        f"Clock: {style['name']}" for style in NATIVE_CLOCK_STYLES.values()
+    ]
+    hass.services.async_register(
+        DOMAIN,
+        "set_button_effects",
+        handle_set_button_effects,
+        schema=vol.Schema({
+            vol.Required("effects"): vol.All(
+                [vol.In(button_effect_options)],
+                vol.Length(min=1, max=8),
+            ),
+            vol.Required("entity_id"): _entity_id_or_list,
+        }),
+    )
     return True
+
+
+def async_remove_light_services(hass: HomeAssistant) -> None:
+    """Remove component-level entity-facing actions."""
+    for service_name in LIGHT_SERVICE_NAMES:
+        if hass.services.has_service(DOMAIN, service_name):
+            hass.services.async_remove(DOMAIN, service_name)

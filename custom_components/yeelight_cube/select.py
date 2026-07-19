@@ -12,10 +12,15 @@ from .const import (
     CONTENT_MODES,
     DEFAULT_MATRIX_DISPLAY_MODE,
     DEFAULT_NATIVE_CLOCK_STYLE,
+    DEFAULT_NATIVE_EFFECT,
     DOMAIN,
     MATRIX_DISPLAY_MODES,
     NATIVE_CLOCK_STYLES,
+    NATIVE_EFFECT_DIRECTIONS,
+    NATIVE_EFFECTS,
+    POWER_ON_STATES,
 )
+from .builtin_pixel_art import get_builtin_pixel_art_map
 from .layout import FONT_MAPS
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,7 +30,9 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> bool:
     """Set up Yeelight Cube Lite select entities from a config entry."""
-    
+    # Prime the read-only app gallery outside Home Assistant's event loop.
+    await hass.async_add_executor_job(get_builtin_pixel_art_map)
+
     ip = entry.data[CONF_IP]
     
     # Get the light entity that was set up earlier
@@ -42,6 +49,11 @@ async def async_setup_entry(
     content_mode_select = YeelightCubeContentModeSelect(light_entity, entry)
     mode_select = YeelightCubeDisplayModeSelect(light_entity, entry)
     clock_style_select = YeelightCubeClockStyleSelect(light_entity, entry)
+    native_effect_select = YeelightCubeNativeEffectSelect(light_entity, entry)
+    native_effect_direction_select = YeelightCubeNativeEffectDirectionSelect(
+        light_entity, entry
+    )
+    power_on_state_select = YeelightCubePowerOnStateSelect(light_entity, entry)
     alignment_select = YeelightCubeAlignmentSelect(light_entity, entry)
     font_select = YeelightCubeFontSelect(light_entity, entry)
     transition_select = YeelightCubeTransitionSelect(light_entity, entry)
@@ -51,6 +63,9 @@ async def async_setup_entry(
         content_mode_select,
         mode_select,
         clock_style_select,
+        native_effect_select,
+        native_effect_direction_select,
+        power_on_state_select,
         alignment_select,
         font_select,
         transition_select,
@@ -272,38 +287,22 @@ class YeelightCubePixelArtSelect(SelectEntity):
         return self._attr_current_option
 
     def _update_options(self):
-        """Update the options list from pixel art storage."""
-        if DOMAIN not in self._hass.data:
-            self._attr_options = ["No pixel arts available"]
-            return
-
-        pixel_arts = self._hass.data[DOMAIN].get("pixel_arts", [])
-
-        if not pixel_arts:
-            self._attr_options = ["No pixel arts available"]
-            return
+        """Update options from user storage and the read-only app gallery."""
+        pixel_arts = self._hass.data.get(DOMAIN, {}).get("pixel_arts", [])
 
         art_names = []
         for idx, art in enumerate(pixel_arts):
             name = art.get("name", f"Pixel Art {idx + 1}")
             art_names.append(name)
 
-        self._attr_options = art_names
+        self._attr_options = art_names + list(get_builtin_pixel_art_map())
         _LOGGER.debug(f"[PIXEL ART SELECT] Updated options: {len(art_names)} pixel arts")
 
     async def async_select_option(self, option: str) -> None:
         """Handle pixel art selection — apply the chosen pixel art to the lamp."""
         _LOGGER.debug(f"[PIXEL ART SELECT] User selected: '{option}' for entity {self.entity_id}")
 
-        if DOMAIN not in self._hass.data:
-            _LOGGER.error("[PIXEL ART SELECT] No pixel art data in hass.data")
-            return
-
-        pixel_arts = self._hass.data[DOMAIN].get("pixel_arts", [])
-
-        if option == "No pixel arts available":
-            _LOGGER.warning("[PIXEL ART SELECT] No pixel arts to apply")
-            return
+        pixel_arts = self._hass.data.get(DOMAIN, {}).get("pixel_arts", [])
 
         # Find the pixel art by name
         art_idx = None
@@ -313,10 +312,12 @@ class YeelightCubePixelArtSelect(SelectEntity):
                 break
 
         if art_idx is None:
-            _LOGGER.error(f"[PIXEL ART SELECT] Pixel art '{option}' not found in storage")
-            return
-
-        art = pixel_arts[art_idx]
+            art = get_builtin_pixel_art_map().get(option)
+            if art is None:
+                _LOGGER.error(f"[PIXEL ART SELECT] Pixel art '{option}' not found")
+                return
+        else:
+            art = pixel_arts[art_idx]
         if "pixels" not in art or not isinstance(art["pixels"], list) or len(art["pixels"]) == 0:
             _LOGGER.error(f"[PIXEL ART SELECT] Invalid pixel art format for '{option}'")
             return
@@ -440,7 +441,7 @@ class YeelightCubeContentModeSelect(SelectEntity):
 
     def _content_mode(self) -> str:
         mode = getattr(self._light_entity, "_mode", DEFAULT_MATRIX_DISPLAY_MODE)
-        return mode if mode == "Clock" else "Matrix"
+        return mode if mode in ("Clock", "Native Effect") else "Matrix"
 
     @property
     def device_info(self):
@@ -715,6 +716,170 @@ class YeelightCubeClockStyleSelect(SelectEntity):
             f"[CLOCK STYLE] Registered for {self._light_entity._ip}, "
             f"current style={self._light_entity._native_clock_style}"
         )
+
+
+class YeelightCubeNativeEffectSelect(SelectEntity):
+    """Select one of the firmware-native Cube Lite animations."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "native_effect"
+
+    def __init__(self, light_entity, config_entry: ConfigEntry):
+        self._light_entity = light_entity
+        self._config_entry = config_entry
+        self._attr_unique_id = f"{light_entity._attr_unique_id}_native_effect"
+        self._attr_icon = "mdi:creation"
+        self._attr_options = list(NATIVE_EFFECTS)
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": self._light_entity._attr_name,
+            "manufacturer": "Yeelight",
+            "model": "Cube Lite",
+        }
+
+    @property
+    def available(self) -> bool:
+        return self._light_entity.available
+
+    @property
+    def current_option(self) -> str:
+        return getattr(self._light_entity, "_native_effect", DEFAULT_NATIVE_EFFECT)
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in NATIVE_EFFECTS:
+            raise ValueError(f"Unknown native effect: {option}")
+        self._light_entity._native_effect = option
+        if self._light_entity._native_effect_direction_select_entity:
+            self._light_entity._native_effect_direction_select_entity.async_update_from_light()
+        if self._light_entity._native_effect_speed_entity:
+            self._light_entity._native_effect_speed_entity.async_write_ha_state()
+        if self._light_entity._mode == "Native Effect" and self._light_entity._is_on:
+            await self._light_entity.async_apply_display_mode(
+                update_type="color_change"
+            )
+        self.async_write_ha_state()
+        self._light_entity.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._light_entity._native_effect_select_entity = self
+
+
+class YeelightCubeNativeEffectDirectionSelect(SelectEntity):
+    """Select the direction used by directional native animations."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "native_effect_direction"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, light_entity, config_entry: ConfigEntry):
+        self._light_entity = light_entity
+        self._config_entry = config_entry
+        self._attr_unique_id = (
+            f"{light_entity._attr_unique_id}_native_effect_direction"
+        )
+        self._attr_icon = "mdi:arrow-all"
+        self._attr_options = list(NATIVE_EFFECT_DIRECTIONS)
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": self._light_entity._attr_name,
+            "manufacturer": "Yeelight",
+            "model": "Cube Lite",
+        }
+
+    @property
+    def available(self) -> bool:
+        spec = NATIVE_EFFECTS[self._light_entity._native_effect]
+        return self._light_entity.available and bool(spec.get("directions"))
+
+    @property
+    def current_option(self) -> str:
+        directions = NATIVE_EFFECTS[self._light_entity._native_effect].get(
+            "directions", NATIVE_EFFECT_DIRECTIONS
+        )
+        current = self._light_entity._native_effect_direction
+        return current if current in directions else directions[0]
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in NATIVE_EFFECT_DIRECTIONS:
+            raise ValueError(f"Unknown native effect direction: {option}")
+        self._light_entity._native_effect_direction = option
+        spec = NATIVE_EFFECTS[self._light_entity._native_effect]
+        if (
+            spec.get("directions")
+            and self._light_entity._mode == "Native Effect"
+            and self._light_entity._is_on
+        ):
+            await self._light_entity.async_apply_display_mode(
+                update_type="color_change"
+            )
+        self.async_write_ha_state()
+        self._light_entity.async_write_ha_state()
+
+    @callback
+    def async_update_from_light(self):
+        directions = NATIVE_EFFECTS[self._light_entity._native_effect].get(
+            "directions", NATIVE_EFFECT_DIRECTIONS
+        )
+        self._attr_options = list(directions)
+        if self._light_entity._native_effect_direction not in directions:
+            self._light_entity._native_effect_direction = directions[0]
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._light_entity._native_effect_direction_select_entity = self
+        self.async_update_from_light()
+
+
+class YeelightCubePowerOnStateSelect(SelectEntity):
+    """Configure the device's behavior after mains power is restored."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "power_on_state"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, light_entity, config_entry: ConfigEntry):
+        self._light_entity = light_entity
+        self._config_entry = config_entry
+        self._attr_unique_id = f"{light_entity._attr_unique_id}_power_on_state"
+        self._attr_icon = "mdi:power-settings"
+        self._attr_options = list(POWER_ON_STATES)
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": self._light_entity._attr_name,
+            "manufacturer": "Yeelight",
+            "model": "Cube Lite",
+        }
+
+    @property
+    def available(self) -> bool:
+        return self._light_entity.available
+
+    @property
+    def current_option(self) -> str:
+        return self._light_entity._power_on_state
+
+    async def async_select_option(self, option: str) -> None:
+        await self._light_entity.async_set_power_on_state(option)
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._light_entity._power_on_state_select_entity = self
 
 
 class YeelightCubeAlignmentSelect(SelectEntity):

@@ -128,6 +128,23 @@ load_palette:
         entity:
           domain: light
 
+set_button_effects:
+  name: Set physical button effects
+  description: Set one to eight ordered native presets cycled by the Cube Lite physical button.
+  fields:
+    effects:
+      description: Ordered native effect or clock style names. The first item is button slot 1.
+      required: true
+      example: '["Ribbon", "Rainbow", "Clock: Yellow"]'
+      selector:
+        object:
+    entity_id:
+      description: Target Yeelight Cube Lite entity.
+      required: true
+      selector:
+        entity:
+          domain: light
+
 preview_gradient_modes:
   name: Preview Gradient Modes
   description: Generate full 5x20 preview matrices for all gradient modes using the entity's current text, colors, and angle. Returns previews via event bus.
@@ -213,6 +230,7 @@ set_mode:
         select:
           options:
             - "Clock"
+            - "Native Effect"
             - "Solid Color"
             - "Letter Gradient"
             - "Column Gradient"

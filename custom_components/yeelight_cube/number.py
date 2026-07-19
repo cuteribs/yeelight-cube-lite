@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant, callback  # type: ignore
 from homeassistant.helpers.entity import EntityCategory  # type: ignore
 from homeassistant.helpers.entity_platform import AddEntitiesCallback  # type: ignore
 
-from .const import DOMAIN, CONF_IP
+from .const import DOMAIN, CONF_IP, NATIVE_EFFECTS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +27,8 @@ async def async_setup_entry(
         YeelightCubeGradientAngleNumber(light_entity, entry),
         YeelightCubeTransitionStepsNumber(light_entity, entry),
         YeelightCubeTransitionDurationNumber(light_entity, entry),
+        YeelightCubeNativeEffectSpeedNumber(light_entity, entry),
+        YeelightCubeScrollSpeedNumber(light_entity, entry),
     ]
 
     # Add all preview adjustment sliders
@@ -380,3 +382,107 @@ class YeelightCubeTransitionDurationNumber(NumberEntity):
             f"[TRANSITION DURATION] Registered for {self._light_entity._ip}, "
             f"current duration={self._light_entity._transition_duration}s"
         )
+
+
+class YeelightCubeNativeEffectSpeedNumber(NumberEntity):
+    """Control the rate used by firmware-native animations."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "native_effect_speed"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, light_entity, config_entry: ConfigEntry):
+        self._light_entity = light_entity
+        self._config_entry = config_entry
+        self._attr_unique_id = f"{light_entity._attr_unique_id}_native_effect_speed"
+        self._attr_icon = "mdi:speedometer"
+        self._attr_native_min_value = 1.0
+        self._attr_native_max_value = 100.0
+        self._attr_native_step = 1.0
+        self._attr_native_unit_of_measurement = "%"
+        self._attr_mode = NumberMode.SLIDER
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": self._light_entity._attr_name,
+            "manufacturer": "Yeelight",
+            "model": "Cube Lite",
+        }
+
+    @property
+    def available(self) -> bool:
+        spec = NATIVE_EFFECTS[self._light_entity._native_effect]
+        return self._light_entity.available and bool(spec.get("speed"))
+
+    @property
+    def native_value(self) -> float:
+        return float(self._light_entity._native_effect_speed)
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._light_entity._native_effect_speed = max(1, min(100, int(value)))
+        spec = NATIVE_EFFECTS[self._light_entity._native_effect]
+        if (
+            spec.get("speed")
+            and self._light_entity._mode == "Native Effect"
+            and self._light_entity._is_on
+        ):
+            await self._light_entity.async_apply_display_mode(
+                update_type="color_change"
+            )
+        self.async_write_ha_state()
+        self._light_entity.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._light_entity._native_effect_speed_entity = self
+
+
+class YeelightCubeScrollSpeedNumber(NumberEntity):
+    """Control the matrix text scroll interval."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "scroll_speed"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, light_entity, config_entry: ConfigEntry):
+        self._light_entity = light_entity
+        self._config_entry = config_entry
+        self._attr_unique_id = f"{light_entity._attr_unique_id}_scroll_speed"
+        self._attr_icon = "mdi:timer-play-outline"
+        self._attr_native_min_value = 0.05
+        self._attr_native_max_value = 2.0
+        self._attr_native_step = 0.05
+        self._attr_native_unit_of_measurement = "s"
+        self._attr_mode = NumberMode.SLIDER
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": self._light_entity._attr_name,
+            "manufacturer": "Yeelight",
+            "model": "Cube Lite",
+        }
+
+    @property
+    def available(self) -> bool:
+        return self._light_entity.available
+
+    @property
+    def native_value(self) -> float:
+        return float(self._light_entity._scroll_speed)
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._light_entity._scroll_speed = max(0.05, min(2.0, round(value, 2)))
+        if self._light_entity._is_scrolling:
+            self._light_entity.start_scroll_timer()
+        self.async_write_ha_state()
+        self._light_entity.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._light_entity._scroll_speed_entity = self
