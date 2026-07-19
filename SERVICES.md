@@ -813,6 +813,32 @@ data:
 
 ---
 
+### `set_button_effects`
+
+Update one to eight leading slots in the native preset list cycled by the
+Cube Lite's physical button.
+
+| Field | Required | Description |
+| :-- | :-- | :-- |
+| `effects` | Yes | Ordered native effect names or `Clock: <style>` names, maximum 8 |
+| `entity_id` | Yes | Target lamp entity |
+
+```yaml
+action: yeelight_cube.set_button_effects
+data:
+  effects:
+    - Ribbon
+    - Rainbow
+    - "Clock: Yellow"
+  entity_id: light.cubelite_a904
+```
+
+The firmware protocol updates slots individually and does not expose a
+documented truncate operation. A shorter call overwrites only the leading
+slots; it does not guarantee that older trailing slots are removed.
+
+---
+
 ### `set_color_calibration`
 
 > [!NOTE]
@@ -1114,6 +1140,7 @@ Some services return data that can be used in automations.
 | **Text Settings** | `set_font`, `set_alignment`, `set_orientation` | Text formatting |
 | **Color Effects** | `set_preview_adjustments`, `set_color_accuracy` | Real-time color adjustments |
 | **State** | `save_state`, `restore_state` | Snapshot & restore what's displayed |
+| **Native presets** | `set_button_effects` | Configure physical-button effect slots |
 | **Recovery** | `force_refresh` | Reconnect & re-send display state |
 | **Management** | `create_cube_discovery`, `test_display`, `force_rediscovery` | Device setup & diagnostics |
 

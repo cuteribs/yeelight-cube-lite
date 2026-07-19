@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util  # type: ignore
 
 from .const import DOMAIN, CONF_IP
 from .layout import FONT_MAPS
+from .native_effect_preview import render_native_effect
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -175,7 +176,10 @@ class _YeelightCubeMatrixCameraBase(Camera):
         self._cached_image = self._render_matrix(colors)
 
     def _is_native_preview_mode(self) -> bool:
-        return getattr(self._light_entity, "_mode", None) == "Clock"
+        return getattr(self._light_entity, "_mode", None) in (
+            "Clock",
+            "Native Effect",
+        )
 
     def _get_matrix_colors(self) -> list[tuple]:
         """Get brightness-corrected matrix colours with perceptual boost.
@@ -203,6 +207,8 @@ class _YeelightCubeMatrixCameraBase(Camera):
         mode = getattr(le, "_mode", None)
         if mode == "Clock":
             base = self._get_clock_preview()
+        elif mode == "Native Effect":
+            base = self._get_native_effect_preview()
         else:
             base = getattr(le, "_base_matrix_colors", None)
         if not base or len(base) != 100:
@@ -231,6 +237,17 @@ class _YeelightCubeMatrixCameraBase(Camera):
             b = min(255, round(b * effective))
             result.append((r, g, b))
         return result
+
+    def _get_native_effect_preview(self) -> list[tuple[int, int, int]]:
+        """Render a local approximation of the active firmware animation."""
+        le = self._light_entity
+        speed = max(1, min(100, int(getattr(le, "_native_effect_speed", 50))))
+        phase = _time.monotonic() * (0.25 + speed / 55.0)
+        return render_native_effect(
+            getattr(le, "_native_effect", "Ribbon"),
+            phase,
+            getattr(le, "_native_effect_direction", "Up"),
+        )
 
     def _get_clock_preview(self) -> list[tuple[int, int, int]]:
         """Render the active firmware clock face into a 20x5 matrix."""

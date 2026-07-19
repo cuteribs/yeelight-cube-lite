@@ -23,6 +23,9 @@ A Home Assistant custom integration for the **Yeelight Cube Smart Lamp Lite**, a
 | **Full matrix control** | 20×5 RGB, individual pixel-level color |
 | **Brightness** | Full brightness control |
 | **Native clock** | 14 firmware clock styles with date, 12/24-hour, and colon blink options |
+| **Native animations** | 18 LAN-compatible firmware effects with speed and direction controls where supported |
+| **Official pixel art** | 68 locally bundled, read-only drawings from the Yeelight Station app; personal drawings stay separate |
+| **Device settings** | Power-on behavior, text scrolling, and physical-button preset list |
 | **Colors & gradients** | Gradient support across multiple modes |
 | **Color effects** | Hue shift, saturation, vibrance, tint, glow, contrast, invert, grayscale |
 | **Transitions** | 14+ animated transition effects |
@@ -78,6 +81,14 @@ Or manually add the custom repository:
 1. Download the [latest release](https://github.com/Max-src/yeelight-cube-lite/releases)
 2. Copy the contents into `custom_components/yeelight_cube/` inside your HA config directory
 3. Restart Home Assistant
+
+### Updating
+
+After updating through HACS or replacing the integration files manually, restart
+Home Assistant so the updated Python code and new entities are loaded. Existing
+device entries, settings, palettes, and personal pixel art are preserved. If a
+dashboard card does not update after the restart, perform a hard browser refresh
+(`Ctrl+F5`).
 
 ---
 
@@ -440,15 +451,16 @@ Each lamp creates its own set of per-device entities, plus the integration creat
 | :-- | :-- | :-- |
 | **Auto Turn On** | Switch | Automatically turn on the lamp when a new mode or drawing is applied |
 | **Yeelight Cube Lite** | Light | Main light entity (on/off and brightness; RGB color in Matrix mode) |
-| **Content Mode** | Select | Switch between Matrix and the firmware-native Clock |
+| **Content Mode** | Select | Switch between Matrix, firmware-native Clock, and Native Effect |
 | **Display Mode** | Select | Choose the Matrix render mode (see [Display Modes](#display-modes)) |
 | **Clock Style** | Select | Choose one of the 14 native clock styles |
+| **Native Effect** | Select | Choose one of the 18 LAN-compatible firmware-native animations |
 | **Display Text** | Text | Text input for custom text display on the matrix |
 | **Flip Orientation** | Switch | Rotate matrix content for upside-down mounting |
 | **Font** | Select | Choose text font: basic, fat, italic |
 | **Gradient Angle** | Number | Angle for angle-based gradient modes (0°–360°) |
 | **Palette** | Select | Select from saved color palettes |
-| **Pixel Art** | Select | Select from saved pixel art drawings |
+| **Pixel Art** | Select | Select personal drawings or 68 locally bundled, read-only official presets |
 | **Text Alignment** | Select | Text alignment: left, center, right |
 
 #### Sensors
@@ -468,6 +480,11 @@ Each lamp creates its own set of per-device entities, plus the integration creat
 | **Clock Show Date** | Switch | Alternate the date with the current time in Clock mode |
 | **Clock 12-Hour Format** | Switch | Use 12-hour time instead of 24-hour time |
 | **Clock Colon Blink** | Switch | Blink the time separator in Clock mode |
+| **Native Effect Direction** | Select | Direction for effects that support movement |
+| **Native Effect Speed** | Number | Animation rate (1–100%) |
+| **Power-on Behavior** | Select | Choose Off, On, or Toggle after mains power is restored |
+| **Text Scroll** | Switch | Enable scrolling for text wider than the matrix |
+| **Text Scroll Interval** | Number | Delay between scroll steps (0.05–2 seconds) |
 | **Color: Hue Shift** | Number | Shift colors around the wheel (−180° to +180°) |
 | **Color: Temperature** | Number | Warm/cool adjustment (−100 to +100) |
 | **Effects: Grayscale** | Number | Grayscale intensity (0–100%) |
@@ -572,6 +589,7 @@ All entities (light, selectors, sliders, text, switches) can be used in standard
 | `yeelight_cube.set_solid_color` | Set a single solid color | `rgb_color`, `entity_id` |
 | `yeelight_cube.set_angle` | Set gradient angle | `angle` (0–360), `entity_id` |
 | `yeelight_cube.set_brightness` | Set brightness | `brightness` (1–100), `entity_id` |
+| `yeelight_cube.set_button_effects` | Update the physical-button preset slots | `effects` (1–8 names), `entity_id` |
 
 #### Pixel Art
 
@@ -668,6 +686,7 @@ The **Content Mode** entity selects the active content source:
 | :-- | :-- |
 | **Matrix** | Render text, gradients, palettes, or drawings through the integration |
 | **Clock** | Run the Cube Lite firmware's native clock effect |
+| **Native Effect** | Run one of 18 LAN-compatible firmware-native animations |
 
 When Matrix content is active, the **Display Mode** entity or Gradient Card selects the renderer:
 
@@ -685,6 +704,14 @@ When Matrix content is active, the **Display Mode** entity or Gradient Card sele
 | **Panel Color Sequence** | Color sequence across all pixels |
 | **Custom Draw** | Pixel art mode (use the Draw Card) |
 
+### Built-in Pixel Art
+
+The integration includes 68 official drawings from the Yeelight Station app as
+local, read-only presets. They appear alongside personal drawings in the Pixel
+Art entity, but they are not imported into, written to, or allowed to overwrite
+the personal gallery. Personal drawings can still be created, renamed, and
+removed independently.
+
 ### Native Clock
 
 Clock mode provides 14 firmware styles and separate options for date display,
@@ -693,9 +720,44 @@ available while Clock mode is active.
 
 The clock command uses the Cube Lite's private LAN protocol. The firmware does
 not report the active clock configuration back to Home Assistant, so entity
-states represent the last settings requested by this integration. Camera
-previews approximate the firmware palettes and may differ slightly from the
-physical LEDs.
+states represent the last settings requested by this integration. Changes made
+from the Station app or physical button may therefore not appear immediately in
+Home Assistant. Camera previews approximate the firmware palettes and may
+differ slightly from the physical LEDs.
+
+### Native Effects
+
+Native Effect mode exposes the 18 presets that the Cube Lite accepts directly
+through its private LAN protocol. Speed and direction entities are available
+only when the selected effect supports them. **Hacking** supports only **Up**
+and **Down**; other directional effects may also offer **Left** and **Right**.
+Winter, Dream, Halloween, and Moonlight are not exposed because the Station app
+uploads a GIF through a Matter-only vendor command before activation; the
+private LAN protocol cannot reproduce that transaction. Both Matrix Preview
+cameras render animated local approximations while a native effect is active
+because the firmware does not provide live frame readback.
+
+While Clock or Native Effect mode is active, the integration intentionally
+pauses periodic `get_prop` polling because this firmware query can stop the
+native renderer and switch the display to another mode. Home Assistant therefore
+keeps the last settings requested by the integration until another command is
+sent. Brightness remains available and is applied after activating the native
+renderer so it does not cancel the selected clock or animation.
+
+The `set_button_effects` action writes one to eight ordered presets to the
+physical-button slots. Updating a shorter list only overwrites those leading
+slots because the private LAN protocol does not expose a documented truncate
+operation.
+
+```yaml
+action: yeelight_cube.set_button_effects
+data:
+  entity_id: light.yeelight_cube_lite
+  effects:
+    - Ribbon
+    - Rainbow
+    - "Clock: Yellow"
+```
 
 ---
 

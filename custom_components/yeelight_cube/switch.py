@@ -32,6 +32,7 @@ async def async_setup_entry(
         YeelightCubeClockShowDateSwitch(config_entry, light_data),
         YeelightCubeClock12HourSwitch(config_entry, light_data),
         YeelightCubeClockColonBlinkSwitch(config_entry, light_data),
+        YeelightCubeScrollSwitch(config_entry, light_data),
     ]
     
     async_add_entities(switches)
@@ -274,3 +275,58 @@ class YeelightCubeClockColonBlinkSwitch(_YeelightCubeClockOptionSwitch):
         await super().async_added_to_hass()
         self._light_entity._clock_colon_blink_switch_entity = self
         self.async_update_from_light()
+
+
+class YeelightCubeScrollSwitch(SwitchEntity):
+    """Enable automatic ping-pong scrolling for text wider than the matrix."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_translation_key = "scroll_enabled"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, config_entry: ConfigEntry, light_data):
+        self._config_entry = config_entry
+        self._light_entity = light_data.get("light")
+        self._attr_unique_id = f"{self._light_entity._attr_unique_id}_scroll_enabled"
+        self._attr_icon = "mdi:format-text-rotation-none"
+        self._attr_is_on = self._light_entity._scroll_enabled
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": self._light_entity._attr_name,
+            "manufacturer": "Yeelight",
+            "model": "Cube Lite",
+        }
+
+    @property
+    def available(self) -> bool:
+        return self._light_entity.available
+
+    async def async_turn_on(self, **kwargs):
+        self._light_entity._scroll_enabled = True
+        self._attr_is_on = True
+        if self._light_entity._max_scroll_offset > 0:
+            self._light_entity._is_scrolling = True
+            self._light_entity.start_scroll_timer()
+        self.async_write_ha_state()
+        self._light_entity.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs):
+        self._light_entity._scroll_enabled = False
+        self._light_entity._is_scrolling = False
+        self._light_entity.stop_scroll_timer()
+        self._attr_is_on = False
+        self.async_write_ha_state()
+        self._light_entity.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._light_entity._scroll_enabled_switch_entity = self
+
+    def async_update_from_light(self):
+        self._attr_is_on = self._light_entity._scroll_enabled
+        if self.hass is not None:
+            self.async_write_ha_state()

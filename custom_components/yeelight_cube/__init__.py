@@ -127,6 +127,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Yeelight Cube Lite component."""
     _LOGGER.debug("Yeelight Cube Lite async_setup() called")
 
+    hass.data.setdefault(DOMAIN, {})
+    get_conflict_prevention(hass)
+    async_setup_services(hass)
+    # Entity-facing actions resolve their target from the runtime registry, so
+    # they can be registered before any individual config entry is loaded.
+    from .light import async_setup_light_services
+
+    async_setup_light_services(hass)
+
     # Register static HTTP path to serve frontend JS card files.
     # Done here in async_setup (component level) so it runs exactly once on
     # every HA startup, regardless of how many entries exist or whether any
@@ -283,6 +292,8 @@ _ENTITY_SUFFIXES_BY_PLATFORM: list[tuple[str, str]] = [
     ("number", "_gradient_angle"),
     ("number", "_transition_steps"),
     ("number", "_transition_duration"),
+    ("number", "_native_effect_speed"),
+    ("number", "_scroll_speed"),
     # Preview adjustment numbers (keys from PREVIEW_ADJUSTMENT_SPECS)
     ("number", "_hue_shift"),
     ("number", "_temperature"),
@@ -298,9 +309,19 @@ _ENTITY_SUFFIXES_BY_PLATFORM: list[tuple[str, str]] = [
     ("select", "_palette_select"),
     ("select", "_pixel_art_select"),
     ("select", "_display_mode_select"),
+    ("select", "_content_mode_select"),
+    ("select", "_clock_style_select"),
+    ("select", "_native_effect"),
+    ("select", "_native_effect_direction"),
+    ("select", "_power_on_state"),
     ("select", "_alignment_select"),
     ("select", "_font_select"),
     ("select", "_transition_select"),
+    # Native clock and text behavior switches
+    ("switch", "_clock_show_date"),
+    ("switch", "_clock_12_hour"),
+    ("switch", "_clock_colon_blink"),
+    ("switch", "_scroll_enabled"),
     # Text
     ("text", "_display_text"),
     # Camera
@@ -457,10 +478,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.info(f"[pixelart-migration] Migrating {len(_migrated_pixel_arts)} pixel arts to grouped format — saving to disk.")
             await async_save_data(hass)
         
-        # Initialize conflict prevention and services (only once)
-        get_conflict_prevention(hass)
-        async_setup_services(hass)
-
         # Register cards as Lovelace resources (same mechanism as HACS plugins).
         # This is more reliable than add_extra_js_url because HA loads these
         # resources the same way as Mushroom, card-mod, and other HACS cards.
@@ -880,6 +897,9 @@ async def async_save_data(hass: HomeAssistant):
 async def async_remove(hass: HomeAssistant) -> None:
     """Remove the component."""
     # Remove services
+    from .light import async_remove_light_services
+
+    async_remove_light_services(hass)
     async_remove_services(hass)
     # Cancel any pending dismiss timers
     cancel = hass.data.get(DOMAIN, {}).pop("_dismiss_unsub", None)
