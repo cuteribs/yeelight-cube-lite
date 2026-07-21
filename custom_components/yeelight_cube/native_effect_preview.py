@@ -91,11 +91,13 @@ def render_native_effect(
                 trail = max(0.0, math.sin((u * 3.0 - phase * 1.4 + noise * 0.3) * math.tau)) ** 3
                 color = _rgb(20, 125 + 110 * trail, 255, 0.18 + 0.82 * trail)
             elif effect == "Aurora":
-                curtain = (math.sin((x * 1.6 + phase * 0.22) * math.tau + y * 2.0) + 1.0) / 2.0
+                # Curtains hang perpendicular to the flow (v) and shift along it (u).
+                curtain = (math.sin((v * 1.6 + phase * 0.22) * math.tau + u * 2.0) + 1.0) / 2.0
                 color = _palette(((18, 255, 143), (20, 126, 255), (192, 55, 255)), curtain)
                 color = _rgb(*color, 0.3 + 0.7 * wave)
             elif effect == "Fire":
-                heat = max(0.0, 1.0 - y + noise * 0.45 - 0.2 * math.sin((x * 3 + phase) * math.tau))
+                # Flames rise along the flow axis (u); flicker varies across it (v).
+                heat = max(0.0, 1.0 - u + noise * 0.45 - 0.2 * math.sin((v * 3 + phase) * math.tau))
                 color = _palette(((70, 0, 0), (255, 35, 0), (255, 200, 0), (255, 255, 180)), min(1.0, heat))
             elif effect == "Bouncing Ball":
                 center_x = (math.sin(phase * 1.7) + 1.0) * 0.5
@@ -108,8 +110,9 @@ def render_native_effect(
                 trail = max(0.0, 1.0 - position * 5.0)
                 color = _rgb(130 + 125 * trail, 170 + 85 * trail, 255, 0.08 + 0.92 * trail)
             elif effect == "Tide":
-                height = 0.46 + 0.25 * math.sin((x * 1.5 - phase * 0.35) * math.tau)
-                level = 0.15 if y > height else 0.55 + 0.45 * wave
+                # Water rises along the flow axis (u); ripples run across it (v).
+                height = 0.46 + 0.25 * math.sin((v * 1.5 - phase * 0.35) * math.tau)
+                level = 0.15 if u > height else 0.55 + 0.45 * wave
                 color = _rgb(0, 145, 255, level)
             elif effect == "Building Blocks":
                 block = (int((u * 8 - phase * 2.0)) + int(v * 4)) % 6

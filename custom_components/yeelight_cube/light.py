@@ -5649,9 +5649,21 @@ def async_setup_light_services(hass: HomeAssistant) -> bool:
             async def _do_send():
                 if close_socket:
                     target._cube_matrix._close_fast_socket()
-                # Mirror _activate_native_clock / _activate_native_effect's
-                # prelude (set_bright + short settle) for any firmware fx so
-                # the effect renders immediately.
+                # The firmware clock (mode 40) is order-sensitive: sending
+                # set_bright BEFORE set_fx_effect can CANCEL the clock
+                # activation (see _activate_native_clock). So for clock we send
+                # the fx command first, then brightness. Native effects are the
+                # opposite -- they want the set_bright prelude first so they
+                # render immediately.
+                is_clock = effect_mode == NATIVE_CLOCK_EFFECT_ID
+                if is_fx and is_clock:
+                    await asyncio.sleep(0.1)
+                    await target._cube_matrix.send_raw_command(
+                        method, params, abortive_close=False
+                    )
+                    await asyncio.sleep(0.1)
+                    await target._set_native_mode_brightness()
+                    return
                 if is_fx:
                     await target._set_native_mode_brightness()
                     await asyncio.sleep(0.1)

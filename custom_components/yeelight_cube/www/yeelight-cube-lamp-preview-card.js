@@ -1,6 +1,7 @@
 import { renderDotMatrix, rgbToCss } from "./yeelight-cube-dotmatrix.js";
 import { escapeHtml } from "./html-escape-utils.js";
 import { getInitialMatrix } from "./draw_card_state.js";
+import { renderNativeEffect } from "./native-effect-preview.js";
 import {
   BLACK_THRESHOLD,
   PREVIEW_MIN_BRIGHTNESS_BOOST,
@@ -2113,6 +2114,15 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       !this._isInitialRenderComplete ||
       !this.shadowRoot.querySelector(".lamp-preview-css");
 
+    // Firmware Native Effect mode runs an animation the plugin can't read back,
+    // so the static matrix_colors attribute is meaningless there. When active,
+    // we drive a client-side animation loop (see _startNativeAnimation) and
+    // skip overwriting the matrix with the static colors on smart updates.
+    const isNativeAnimating =
+      this.config.show_lamp_preview !== false &&
+      stateObj.attributes.content_mode === "Native Effect" &&
+      stateObj.state === "on";
+
     if (needsFullRender) {
       // Full render on first load or structural changes
       this.shadowRoot.innerHTML = `
@@ -2162,7 +2172,9 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     } else {
       // Smart update: Only update matrix colors and slider values
       const _tSmart = performance.now();
-      this._updateMatrixColors(gridColors, stateObj);
+      // When a native animation owns the matrix, don't clobber it with the
+      // static (stale) matrix_colors attribute.
+      if (!isNativeAnimating) this._updateMatrixColors(gridColors, stateObj);
       this._updateSliderValues(displayBrightness, effects); // Use cached value to prevent jumping
       this._updatePowerButton(stateObj);
 
@@ -2172,6 +2184,78 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         this._updateChangeIndicators();
       });
     }
+
+    // Start/stop the client-side native-effect animation to match current mode.
+    if (isNativeAnimating) this._startNativeAnimation();
+    else this._stopNativeAnimation();
+  }
+
+  // Convert a 100-entry matrix_colors array (RGB tuples) to CSS colors using
+  // the same brightness-boost pipeline as the static preview. Extracted so the
+  // native-effect animation loop renders identically to the normal path.
+  _matrixColorsToGridColors(matrixColors, stateObj) {
+    const entityBrightness = stateObj?.attributes?.brightness ?? 255;
+    const darkenPercent = stateObj?.attributes?.preview_darken ?? 0;
+    const _minFactor = 1 - PREVIEW_MAX_DARKEN_PERCENT / 100;
+    const _darkenFactor = Math.max(_minFactor, 1 - darkenPercent / 100);
+    const _floor = PREVIEW_MIN_BRIGHTNESS_BOOST * _minFactor;
+    const _t = entityBrightness / 255;
+    const _effective =
+      _floor + (1 - _floor) * Math.pow(_t, PREVIEW_BRIGHTNESS_GAMMA);
+    const previewBoost = _effective / _darkenFactor;
+    return matrixColors.map((c) => {
+      let px = c;
+      if (!Array.isArray(px) || px.length !== 3) px = [0, 0, 0];
+      if (px[0] === 0 && px[1] === 0 && px[2] === 0) return rgbToCss([0, 0, 0]);
+      return rgbToCss(
+        px.map((v) => Math.min(255, Math.round(v * previewBoost))),
+      );
+    });
+  }
+
+  // Begin the client-side approximation animation for Native Effect mode.
+  _startNativeAnimation() {
+    if (this._nativeAnimTimer) return;
+    this._nativeAnimTimer = setInterval(() => this._nativeAnimFrame(), 100);
+    this._nativeAnimFrame(); // draw the first frame immediately
+  }
+
+  _stopNativeAnimation() {
+    if (this._nativeAnimTimer) {
+      clearInterval(this._nativeAnimTimer);
+      this._nativeAnimTimer = null;
+    }
+  }
+
+  _nativeAnimFrame() {
+    const st = this._hass?.states?.[this.config?.entity];
+    if (
+      !st ||
+      st.state !== "on" ||
+      st.attributes.content_mode !== "Native Effect"
+    ) {
+      this._stopNativeAnimation();
+      return;
+    }
+    const dots = this.shadowRoot?.querySelectorAll(".lamp-dot");
+    if (!dots || dots.length !== 100) return; // matrix not rendered yet
+
+    const effect = st.attributes.native_effect || "Ribbon";
+    const dir = st.attributes.native_effect_direction || "Up";
+    const speed = Math.max(
+      1,
+      Math.min(100, Number(st.attributes.native_effect_speed ?? 50)),
+    );
+    // Match the camera's phase mapping (native_effect_preview usage).
+    const phase = (performance.now() / 1000) * (0.25 + speed / 55.0);
+    const pix = renderNativeEffect(effect, phase, dir); // row-major, top->bottom
+
+    // _updateMatrixColors already applies the top/bottom flip that matches the
+    // matrix_colors convention, so feed the effect pixels in their natural
+    // row-major order (row 0 = top). Reversing rows here double-flips and
+    // inverts the Up/Down orientation vs the camera.
+    const grid = this._matrixColorsToGridColors(pix, st);
+    this._updateMatrixColors(grid, st);
   }
 
   // Update only matrix dot colors without rebuilding DOM
@@ -5989,6 +6073,9 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     clearTimeout(this._oscillationResetTimeout);
     clearTimeout(this._userBrightnessTimeout);
     clearTimeout(this._powerToggleSafetyTimer);
+
+    // Stop the native-effect animation loop if running.
+    this._stopNativeAnimation();
 
     this._brightnessDebounceTimer = null;
     this._realBrightnessDebounceTimer = null;
