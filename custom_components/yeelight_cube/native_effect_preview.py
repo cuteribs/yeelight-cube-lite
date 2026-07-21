@@ -83,8 +83,14 @@ def render_native_effect(
             elif effect == "Spectrum":
                 color = _hsv(x * 0.9, 1.0, 0.82 + 0.18 * math.sin((x + phase * 0.08) * math.tau))
             elif effect == "Waves":
-                crest = (math.sin((u * 2.2 + v * 0.6 - phase) * math.tau) + 1.0) / 2.0
-                color = _hsv(0.52 + 0.13 * crest, 0.9, 0.18 + 0.82 * crest)
+                # Concentric ripples radiating from a source point at the
+                # "bottom" centre (along the flow axis), matching the real
+                # firmware effect: deep-blue troughs, cyan crests, wide bands.
+                du = u  # 0 at the source edge (u=0), grows toward u=1
+                dv = (v - 0.5) * 2.2  # perpendicular spread, aspect-weighted
+                dist = math.hypot(du, dv)
+                ripple = (math.sin((dist * 1.0 - phase) * math.tau) + 1.0) / 2.0
+                color = _hsv(0.64 - 0.07 * ripple, 0.97, 0.12 + 0.88 * ripple)
             elif effect == "Rainbow":
                 color = _hsv(u - phase * 0.18, 0.95, 0.95)
             elif effect == "Waterfall":
