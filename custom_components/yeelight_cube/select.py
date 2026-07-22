@@ -57,6 +57,9 @@ async def async_setup_entry(
     alignment_select = YeelightCubeAlignmentSelect(light_entity, entry)
     font_select = YeelightCubeFontSelect(light_entity, entry)
     transition_select = YeelightCubeTransitionSelect(light_entity, entry)
+    device_orientation_select = YeelightCubeDeviceOrientationSelect(
+        light_entity, entry
+    )
     async_add_entities([
         palette_select,
         pixel_art_select,
@@ -69,6 +72,7 @@ async def async_setup_entry(
         alignment_select,
         font_select,
         transition_select,
+        device_orientation_select,
     ])
     
     return True
@@ -960,6 +964,80 @@ class YeelightCubeAlignmentSelect(SelectEntity):
         await super().async_added_to_hass()
         self._light_entity._alignment_select_entity = self
         _LOGGER.debug(f"[ALIGNMENT SELECT] Registered for {self._light_entity._ip}, current alignment={self._light_entity._alignment}")
+
+
+# ── Device orientation selector ────────────────────────────────────────
+# 4-way physical mount orientation (matches the official app + preview card).
+# Display labels map to the lowercase keys used by set_device_orientation.
+_DEVICE_ORIENTATION_LABELS = {
+    "right": "Right",
+    "down": "Down",
+    "left": "Left",
+    "up": "Up",
+}
+_DEVICE_ORIENTATION_OPTIONS = list(_DEVICE_ORIENTATION_LABELS.values())
+_DEVICE_ORIENTATION_LABEL_TO_KEY = {
+    v: k for k, v in _DEVICE_ORIENTATION_LABELS.items()
+}
+
+
+class YeelightCubeDeviceOrientationSelect(SelectEntity):
+    """Select the 4-way physical device orientation (right/down/left/up).
+
+    Replaces the old on/off "Flip Orientation" switch. Applies to the lamp
+    immediately for all modes and drives the lamp preview card's rotation.
+    """
+
+    def __init__(self, light_entity, config_entry: ConfigEntry):
+        self._light_entity = light_entity
+        self._config_entry = config_entry
+        self._attr_name = f"{light_entity._attr_name} Device Orientation"
+        self._attr_unique_id = (
+            f"{light_entity._attr_unique_id}_device_orientation_select"
+        )
+        self._attr_icon = "mdi:screen-rotation"
+        self._attr_options = _DEVICE_ORIENTATION_OPTIONS
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._config_entry.entry_id)},
+            "name": self._light_entity._attr_name,
+            "manufacturer": "Yeelight",
+            "model": "Cube Matrix",
+        }
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def options(self) -> list[str]:
+        return self._attr_options
+
+    @property
+    def current_option(self) -> str | None:
+        key = getattr(self._light_entity, "_device_orientation", "right")
+        return _DEVICE_ORIENTATION_LABELS.get(key, "Right")
+
+    async def async_select_option(self, option: str) -> None:
+        key = _DEVICE_ORIENTATION_LABEL_TO_KEY.get(option)
+        if key is None:
+            _LOGGER.error(f"[DEVICE ORIENTATION] Invalid option: '{option}'")
+            return
+        await self._light_entity.set_device_orientation(key)
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+    @callback
+    def async_update_from_light(self):
+        """Sync the dropdown with the light entity's device orientation."""
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._light_entity._device_orientation_select_entity = self
 
 
 # ── Font selector ──────────────────────────────────────────────────────

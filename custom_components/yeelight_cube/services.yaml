@@ -661,6 +661,33 @@ set_orientation:
         entity:
           domain: light
 
+set_device_orientation:
+  name: Set Device Orientation
+  description: >-
+    Set the physical device orientation (which way the cube is mounted).
+    Applies immediately to the current mode: matrix/text/pixel art flip
+    (right/up upright, left/down 180 deg), and native effects follow the
+    matching flow direction. The 90 deg visual rotation for up/down is shown
+    in the lamp preview card.
+  fields:
+    orientation:
+      description: Physical mount orientation
+      example: "right"
+      required: true
+      selector:
+        select:
+          options:
+            - "right"
+            - "down"
+            - "left"
+            - "up"
+    entity_id:
+      description: Target lamp entity ID (e.g. light.cubelite_192_168_4_102). Must be provided for direct service calls.
+      required: true
+      selector:
+        entity:
+          domain: light
+
 set_font:
   name: Set Font
   description: Set the font used for text display.

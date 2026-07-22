@@ -38,6 +38,7 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
     this._globalOpen = false;
     this._lampPreviewOpen = false;
     this._lampControlOpen = false;
+    this._deviceOrientationOpen = false;
     this._brightnessSettingsOpen = false;
     this._colorAdjustmentsOpen = false;
   }
@@ -119,6 +120,8 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
       this._lampPreviewOpen = !this._lampPreviewOpen;
     } else if (section === "lampControl") {
       this._lampControlOpen = !this._lampControlOpen;
+    } else if (section === "deviceOrientation") {
+      this._deviceOrientationOpen = !this._deviceOrientationOpen;
     } else if (section === "brightnessSettings") {
       this._brightnessSettingsOpen = !this._brightnessSettingsOpen;
     } else if (section === "colorAdjustments") {
@@ -368,6 +371,36 @@ class YeelightCubeLampPreviewCardEditor extends LitElement {
                     </div>
                   </div>
                 `}
+          </div>
+        </div>
+
+        <!-- Device Orientation -->
+        <div
+          class="editor-card${!this._deviceOrientationOpen
+            ? " editor-card-collapsed"
+            : ""}"
+        >
+          <div
+            class="editor-card-header"
+            @click="${() => this._toggleSection("deviceOrientation")}"
+          >
+            Device Orientation ${chevronIcon(!this._deviceOrientationOpen)}
+          </div>
+          <div class="editor-card-content">
+            ${createToggleRow(
+              "Show Device Orientation Control",
+              "show_device_orientation",
+              cfg.show_device_orientation !== false,
+              (e) => this._onToggleChange(e),
+            )}
+            <div
+              class="form-row"
+              style="font-size: 0.85em; color: var(--secondary-text-color, #888);"
+            >
+              4-way mount control (right / down / left / up). Applies to the
+              lamp immediately for all modes; the preview rotates 90° for
+              up/down.
+            </div>
           </div>
         </div>
 

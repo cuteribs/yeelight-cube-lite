@@ -282,6 +282,7 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       brightness_max: 500, // NEW: Maximum brightness value (default 500 to test beyond 255)
       show_power_toggle: true, // NEW: Show on/off toggle button by default
       show_force_refresh_button: true, // Show force refresh button (raw TCP bypass)
+      show_device_orientation: true, // Show the 4-way device orientation control
 
       hide_black_dots: false, // NEW: Ignore black pixels on preview (default: false = OFF)
       show_lamp_preview: true, // NEW: Show lamp matrix preview by default
@@ -2159,6 +2160,9 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         }
       `;
       this._isInitialRenderComplete = true;
+      // Remember which orientation this DOM was built for (smart updates compare).
+      this._lastPreviewOrientation =
+        stateObj?.attributes?.device_orientation || "right";
 
       // Update change indicators after initial render
       requestAnimationFrame(() => {
@@ -2268,26 +2272,23 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
       return;
     }
 
-    const totalRows = 5;
-    const totalCols = 20;
-    // Automatically flip preview if lamp entity orientation is "flipped"
-    const flipPreview = stateObj?.attributes?.orientation === "flipped";
+    // If the device orientation changed, the grid geometry (rows/cols, tall vs
+    // wide) changed too — a colour-only update can't fix that, so full re-render.
+    const orientation = stateObj?.attributes?.device_orientation || "right";
+    if (this._lastPreviewOrientation !== orientation) {
+      this._lastPreviewOrientation = orientation;
+      this._isInitialRenderComplete = false;
+      this.render();
+      return;
+    }
+
+    const layout = this._orientedLayout(orientation);
+    const totalCols = layout.cols;
 
     dots.forEach((dot, idx) => {
-      // Apply the same row-flipping logic as _generateMatrixHtml
       const row = Math.floor(idx / totalCols);
       const col = idx % totalCols;
-      const flippedRow = totalRows - 1 - row;
-
-      // Get base color index
-      let colorIndex = flippedRow * totalCols + col;
-
-      // Apply preview flip if enabled
-      if (flipPreview) {
-        const previewFlippedRow = totalRows - 1 - flippedRow;
-        const previewFlippedCol = totalCols - 1 - col;
-        colorIndex = previewFlippedRow * totalCols + previewFlippedCol;
-      }
+      const colorIndex = layout.indexFn(row, col);
 
       const color = gridColors[colorIndex] || "#000000";
 
@@ -2511,9 +2512,34 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     }
   }
 
+  // Map the physical device orientation to a preview grid geometry + a
+  // function returning the gridColors index for each display cell (r,c).
+  //   right / left : 20x5 landscape (identical preview; left only flips the lamp)
+  //   up / down    : 5x20 tall. Both use the SAME 90deg rotation mapping — the
+  //                  180deg difference between them comes from the lamp content
+  //                  itself (up => _orientation normal, down => flipped). Using
+  //                  different mappings here would cancel that content flip and
+  //                  make up and down look identical.
+  // gridColors is stored bottom-to-top, so the base landscape read is
+  // (rows-1 - r)*20 + c (the historical vertical flip).
+  _orientedLayout(orientation) {
+    if (orientation === "up" || orientation === "down") {
+      return {
+        cols: 5,
+        rows: 20,
+        tall: true,
+        indexFn: (r, c) => c * 20 + r,
+      };
+    }
+    return {
+      cols: 20,
+      rows: 5,
+      tall: false,
+      indexFn: (r, c) => (4 - r) * 20 + c,
+    };
+  }
+
   _generateMatrixHtml(gridColors, stateObj) {
-    const totalRows = 5;
-    const totalCols = 20;
     const matrixBackground = this.config.matrix_background || "black";
     const matrixBoxShadow = this.config.matrix_box_shadow !== false;
     const pixelStyle = this.config.matrix_pixel_style || "square";
@@ -2529,25 +2555,17 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           ? "align-right"
           : "align-center";
 
-    // Automatically flip preview if lamp entity orientation is "flipped"
-    // This keeps the preview readable regardless of physical lamp orientation
-    const flipPreview = stateObj?.attributes?.orientation === "flipped";
+    // Preview geometry follows the physical device orientation.
+    const orientation = stateObj?.attributes?.device_orientation || "right";
+    const layout = this._orientedLayout(orientation);
+    const totalRows = layout.rows;
+    const totalCols = layout.cols;
 
     const pixels = Array.from({ length: totalRows * totalCols })
       .map((_, idx) => {
         const row = Math.floor(idx / totalCols);
         const col = idx % totalCols;
-        const flippedRow = totalRows - 1 - row;
-
-        // Get base color index (already vertically flipped from data)
-        let colorIndex = flippedRow * totalCols + col;
-
-        // Apply preview flip (180° rotation = flip both row AND column)
-        if (flipPreview) {
-          const previewFlippedRow = totalRows - 1 - flippedRow;
-          const previewFlippedCol = totalCols - 1 - col;
-          colorIndex = previewFlippedRow * totalCols + previewFlippedCol;
-        }
+        const colorIndex = layout.indexFn(row, col);
 
         const color = gridColors[colorIndex] || "#000000";
 
@@ -2591,7 +2609,11 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
 
     return `
       <div class="lamp-preview-css ${alignClass}" 
-           style="width:${this.config.size_pct || 100}%; 
+           style="${
+             layout.tall
+               ? `height:340px; width:auto; aspect-ratio:${totalCols} / ${totalRows};`
+               : `width:${this.config.size_pct || 100}%; aspect-ratio:${totalCols} / ${totalRows};`
+           }
                   background: ${matrixBackground}; 
                   gap: ${pixelGap}px; 
                   box-shadow: ${matrixBoxShadow ? "0 2px 8px #0008" : "none"};
@@ -2602,9 +2624,49 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
     `;
   }
 
+  // Build the 4-way device orientation control (right / down / left / up).
+  _generateDeviceOrientationHtml(stateObj) {
+    const current = stateObj?.attributes?.device_orientation || "right";
+    // Order + glyphs match the official app's mount picker.
+    const opts = [
+      { key: "right", glyph: "→", label: "Right" },
+      { key: "down", glyph: "↓", label: "Down" },
+      { key: "left", glyph: "←", label: "Left" },
+      { key: "up", glyph: "↑", label: "Up" },
+    ];
+    const buttons = opts
+      .map(
+        (o) =>
+          `<button type="button" class="orient-btn${
+            o.key === current ? " active" : ""
+          }" data-orient="${o.key}" title="${o.label}"
+            onclick="this.getRootNode().host.handleOrientationSelect('${o.key}')">${o.glyph}</button>`,
+      )
+      .join("");
+    return `<div class="device-orientation-row">${buttons}</div>`;
+  }
+
+  // Apply a device orientation immediately on the lamp (all modes).
+  handleOrientationSelect(orientation) {
+    if (!this._hass || !this.config?.entity) return;
+    // Optimistically highlight the chosen button for instant feedback.
+    this.shadowRoot
+      ?.querySelectorAll(".orient-btn")
+      .forEach((b) =>
+        b.classList.toggle("active", b.dataset.orient === orientation),
+      );
+    this._hass
+      .callService("yeelight_cube", "set_device_orientation", {
+        entity_id: this.config.entity,
+        orientation,
+      })
+      .catch((e) =>
+        console.error("[device-orientation] service call failed:", e),
+      );
+  }
+
   _generateLampControlsHtml(stateObj, brightness) {
     let html = "";
-
     // Power toggle and force refresh buttons on same line
     const showPowerToggle = this.config.show_power_toggle === true;
     const showForceRefresh = this.config.show_force_refresh_button !== false;
@@ -2622,6 +2684,11 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
         html += this._generatePowerToggleHtml(stateObj);
       }
       html += "</div>";
+    }
+
+    // Device orientation control (between power/refresh actions and brightness).
+    if (this.config.show_device_orientation !== false) {
+      html += this._generateDeviceOrientationHtml(stateObj);
     }
 
     // Brightness slider (brightness parameter is already converted to 1-100 scale)
@@ -3813,6 +3880,34 @@ class YeelightCubeLampPreviewCard extends HTMLElement {
           gap: 10px;
           padding: 10px;
           margin: 10px 0;
+        }
+        .device-orientation-row {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          gap: 8px;
+          padding: 4px 10px 10px;
+          margin: 0 0 4px;
+        }
+        .device-orientation-row .orient-btn {
+          width: 44px;
+          height: 40px;
+          border: none;
+          border-radius: 10px;
+          background: var(--secondary-background-color, #e0e0e0);
+          color: var(--primary-text-color, #444);
+          font-size: 1.2rem;
+          line-height: 1;
+          cursor: pointer;
+          transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+        }
+        .device-orientation-row .orient-btn:hover {
+          transform: translateY(-1px);
+        }
+        .device-orientation-row .orient-btn.active {
+          background: linear-gradient(135deg, #b026ff, #ff5e3a);
+          color: #fff;
+          box-shadow: 0 2px 8px rgba(176, 38, 255, 0.4);
         }
         .button-row.two-buttons {
           justify-content: center;

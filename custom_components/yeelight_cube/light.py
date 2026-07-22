@@ -69,6 +69,7 @@ LIGHT_SERVICE_NAMES = (
     "update_pixel_arts",
     "set_brightness",
     "set_orientation",
+    "set_device_orientation",
     "set_font",
     "set_alignment",
     "set_palettes",
@@ -172,6 +173,31 @@ def cleanup_module_state(ip: str) -> None:
 
 ORIENTATION_NORMAL = "normal"
 ORIENTATION_FLIPPED = "flipped"
+
+# 4-way physical device orientation (matches the official app's mount picker).
+# The lamp has no single firmware command for this, so we translate it to the
+# mechanisms that actually work:
+#   - matrix / text / pixel art: normal vs flipped (180 deg) pixel flip
+#   - native effects: the effect's own `direction` field
+#   - clock: no reorientation available (firmware-fixed)
+DEVICE_ORIENTATIONS = ("right", "down", "left", "up")
+DEFAULT_DEVICE_ORIENTATION = "right"
+# Physical mount -> matrix/text/pixel flip. right/down keep content upright;
+# left/up are 180 deg from them (verified against hardware for custom pixel art).
+_DEVICE_ORIENTATION_TO_FLIP = {
+    "right": ORIENTATION_NORMAL,
+    "down": ORIENTATION_NORMAL,
+    "left": ORIENTATION_FLIPPED,
+    "up": ORIENTATION_FLIPPED,
+}
+# Map device orientation -> native effect direction name (for effects that
+# support directions), so an effect's flow follows the physical mounting.
+_DEVICE_ORIENTATION_TO_EFFECT_DIR = {
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+}
 
 # Virtual character sentinel for panel mode.
 # When full_panel is on, the text is replaced by this single character
@@ -842,6 +868,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         self._alignment = "center"  # Default alignment is center
         self._font = "basic"  # Font key for FONT_MAPS (use "basic" as default)
         self._orientation = ORIENTATION_NORMAL  # "normal" or "flipped"
+        self._device_orientation = DEFAULT_DEVICE_ORIENTATION  # right/down/left/up
         self._rgb_color = (255, 0, 0)  # Default red color for Home Assistant color picker
         self._native_clock_style = DEFAULT_NATIVE_CLOCK_STYLE
         self._native_clock_show_date = False
@@ -1034,6 +1061,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         self._native_effect_direction_select_entity = None
         self._native_effect_speed_entity = None
         self._power_on_state_select_entity = None
+        self._device_orientation_select_entity = None
         self._scroll_enabled_switch_entity = None
         self._scroll_speed_entity = None
         
@@ -1501,8 +1529,62 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             _LOGGER.error(f"Invalid orientation value: {orientation}")
             return
         self._orientation = orientation
+        # Keep the 4-way device orientation consistent (normal->right,
+        # flipped->left) so the Device Orientation select reflects legacy calls.
+        self._device_orientation = "left" if orientation == ORIENTATION_FLIPPED else "right"
+        if self._device_orientation_select_entity:
+            self._device_orientation_select_entity.async_update_from_light()
         self._notify_camera_preview()
         await self.async_apply_display_mode(update_type='text_change')
+        if self.hass is not None:
+            self.async_schedule_update_ha_state()
+
+    @property
+    def device_orientation(self):
+        return self._device_orientation
+
+    async def set_device_orientation(self, orientation: str):
+        """Set the 4-way physical device orientation (right/down/left/up).
+
+        There is no single firmware command for this, so we translate it to the
+        mechanisms that actually work and apply immediately for the current mode:
+          - matrix / text / pixel art: normal vs flipped (180 deg) pixel flip
+          - native effects: the effect's own `direction` field (if supported)
+          - clock: no reorientation available (left as-is)
+        The 90 deg visual rotation for up/down is handled by the preview card.
+        """
+        if orientation not in DEVICE_ORIENTATIONS:
+            _LOGGER.error(f"Invalid device orientation value: {orientation}")
+            return
+        self._device_orientation = orientation
+        # Drive the matrix/text/pixel flip (normal vs 180 deg).
+        self._orientation = _DEVICE_ORIENTATION_TO_FLIP[orientation]
+
+        # Whether we need to re-render/re-send to the lamp for this mode.
+        reapply = True
+
+        # For native effects, steer the effect's flow to match the mounting,
+        # but only if the current effect supports that direction.
+        if self._mode == "Native Effect":
+            spec = NATIVE_EFFECTS.get(self._native_effect, {})
+            directions = spec.get("directions")
+            desired = _DEVICE_ORIENTATION_TO_EFFECT_DIR.get(orientation)
+            if directions and desired in directions:
+                self._native_effect_direction = desired
+                if self._native_effect_direction_select_entity:
+                    self._native_effect_direction_select_entity.async_update_from_light()
+        elif self._mode == "Clock":
+            # The firmware clock has NO orientation control, and re-activating it
+            # here disrupts the running clock (it briefly drops / reverts). Since
+            # we can't reorient it anyway, just update state so the preview
+            # rotates and leave the live clock untouched.
+            reapply = False
+
+        self._notify_camera_preview()
+        if reapply:
+            await self.async_apply_display_mode(update_type='text_change')
+        if self._device_orientation_select_entity:
+            self._device_orientation_select_entity.async_update_from_light()
         if self.hass is not None:
             self.async_schedule_update_ha_state()
 
@@ -1623,6 +1705,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             "angle": self._angle,
             "font": self._font,
             "orientation": self._orientation,
+            "device_orientation": self._device_orientation,
             "rgb_color": self._rgb_color,
             "full_panel": self._full_panel,
             # Color effects (used by lamp preview card)
@@ -4683,7 +4766,8 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
         "_native_clock_colon_blink", "_full_panel",
         "_native_effect", "_native_effect_speed", "_native_effect_direction",
         "_angle",
-        "_background_color", "_alignment", "_font", "_orientation", "_rgb_color",
+        "_background_color", "_alignment", "_font", "_orientation",
+        "_device_orientation", "_rgb_color",
         "_brightness", "_custom_pixels", "_custom_draw_active",
         "_active_pixel_art_name", "_scroll_enabled", "_scroll_speed",
         "_preview_hue_shift", "_preview_temperature", "_preview_saturation",
@@ -4713,6 +4797,12 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             return False
         for attr, value in snapshot.items():
             setattr(self, attr, copy.deepcopy(value))
+        # Migration: pre-4-way states saved only _orientation. If the device
+        # orientation wasn't restored but the legacy flip is on, treat it as
+        # "left" (the flipped equivalent) so the new select stays consistent.
+        if getattr(self, "_orientation", ORIENTATION_NORMAL) == ORIENTATION_FLIPPED \
+                and self._device_orientation == "right":
+            self._device_orientation = "left"
         # Reset scroll so restored text starts cleanly from the beginning.
         self._scroll_offset = 0
         self._scroll_direction = 1
@@ -4741,6 +4831,7 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             self._alignment_select_entity,
             self._font_select_entity,
             self._angle_number_entity,
+            self._device_orientation_select_entity,
         ):
             if ref is not None and getattr(ref, "hass", None) is not None:
                 update = getattr(ref, "async_update_from_light", None)
@@ -6003,6 +6094,29 @@ def async_setup_light_services(hass: HomeAssistant) -> bool:
         handle_set_orientation,
         schema=vol.Schema({
             vol.Required("orientation"): vol.In(["normal", "flipped"]),
+            vol.Required("entity_id", description="Target lamp entity (e.g. light.cubelite_192_168_4_102)"): _entity_id_or_list,
+        })
+    )
+    async def handle_set_device_orientation(service_call):
+        orientation = service_call.data.get("orientation")
+
+        target_entity = _resolve_entity(service_call, "SET_DEVICE_ORIENTATION")
+        if not target_entity:
+            return
+
+        # Check auto-turn-on setting
+        if not target_entity._is_on and not target_entity._should_auto_turn_on():
+            _LOGGER.debug("[AUTO-TURN-ON] set_device_orientation ignored - lamp is off and auto-turn-on is disabled")
+            return
+
+        await target_entity.set_device_orientation(orientation)
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_device_orientation",
+        handle_set_device_orientation,
+        schema=vol.Schema({
+            vol.Required("orientation"): vol.In(list(DEVICE_ORIENTATIONS)),
             vol.Required("entity_id", description="Target lamp entity (e.g. light.cubelite_192_168_4_102)"): _entity_id_or_list,
         })
     )

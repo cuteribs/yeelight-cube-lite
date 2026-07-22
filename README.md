@@ -456,7 +456,7 @@ Each lamp creates its own set of per-device entities, plus the integration creat
 | **Clock Style** | Select | Choose one of the 14 native clock styles |
 | **Native Effect** | Select | Choose one of the 18 LAN-compatible firmware-native animations |
 | **Display Text** | Text | Text input for custom text display on the matrix |
-| **Flip Orientation** | Switch | Rotate matrix content for upside-down mounting |
+| **Device Orientation** | Select | Physical mount orientation: Right / Down / Left / Up (applies to all modes) |
 | **Font** | Select | Choose text font: basic, fat, italic |
 | **Gradient Angle** | Number | Angle for angle-based gradient modes (0°–360°) |
 | **Palette** | Select | Select from saved color palettes |
