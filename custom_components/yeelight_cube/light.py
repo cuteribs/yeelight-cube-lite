@@ -96,7 +96,11 @@ LIGHT_SERVICE_NAMES = (
 
 # Timing constants
 APPLY_POST_DELAY = 0.0        # No post-delay needed -- send_command_fast doesn't wait for responses
-APPLY_HARD_TIMEOUT = 5.0      # Seconds -- absolute safety timeout for a single apply() call under
+APPLY_HARD_TIMEOUT = 12.0      # Seconds -- absolute safety timeout for a single apply() call under
+                               # the device lock. Raised from 5 s to give activate_fx_mode +
+                               # draw_matrices time to complete on slow Wi-Fi without triggering
+                               # the hard-timeout flash (lamp shows default ribbon between the
+                               # two commands if the lock is released prematurely).
                               # the global lock.  If an apply() exceeds this (e.g., socket hangs
                               # beyond the per-op 0.5s timeout), asyncio.wait_for cancels it and
                               # releases the lock so other entities can proceed.
@@ -105,7 +109,7 @@ APPLY_HARD_TIMEOUT = 5.0      # Seconds -- absolute safety timeout for a single 
 CIRCUIT_BREAKER_WINDOW = 30.0 # Seconds -- if 2+ hard timeouts occur within this window,
                               # reject new operations immediately instead of queueing them
                               # behind the lock for another 8s timeout each.
-FX_MODE_STALENESS_TIMEOUT = 20.0  # Seconds -- re-send activate_fx_mode when fx_age exceeds this
+FX_MODE_STALENESS_TIMEOUT = 90.0  # Seconds -- re-send activate_fx_mode when fx_age exceeds this
                                   # The Cube silently exits direct FX mode ~25s after ACTIVATION
                                   # (not after last command!).  It keeps the TCP connection open
                                   # and silently ignores update_leds -- no error, no socket close.
@@ -4590,6 +4594,13 @@ class YeelightCubeLight(LightEntity, RestoreEntity):
             _t_before_send = time.time()
             await self._cube_matrix.draw_matrices_fast(raw_rgb_data)
             _t_after_send = time.time()
+            # Refresh the FX mode timestamp on every successful draw.  Without
+            # this the staleness clock keeps running from the last
+            # activate_fx_mode call, so any periodic trigger (e.g. a 60 s
+            # sensor update) exceeds the threshold and forces an unnecessary
+            # full re-activation which briefly shows the default Yeelight ribbon
+            # before the pixel data arrives.
+            self._last_fx_mode_time = _t_after_send
             _LOGGER.debug(
                 f"[TIMING] [{self._ip}] TCP draw_matrices_fast: {(_t_after_send - _t_before_send)*1000:.1f}ms")
             
